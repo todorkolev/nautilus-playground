@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/workspace
+    ports:
+      - "8888:8888"  # JupyterLab
+    command: /bin/sh -c "while sleep 1000; do :; done"  # Keep container running
+    environment:
+      - PYTHONPATH=/workspace
+    user: user
+    working_dir: /workspace
+    tty: true
+    stdin_open: true

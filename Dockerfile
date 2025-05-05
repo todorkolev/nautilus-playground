@@ -22,15 +22,6 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Install UV package manager
-RUN pip install uv
-ENV UV_SYSTEM_PYTHON=1 \
-    UV_PROJECT_ENVIRONMENT="/usr/local"
-
-# Install Node.js using NodeSource
-RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash - && \
-    apt-get install -y nodejs
-
 # Create a non-root user with sudo access
 ARG USERNAME=user
 ARG USER_UID=1000
@@ -46,9 +37,22 @@ RUN groupadd --gid $USER_GID $USERNAME \
 # Switch to non-root user
 USER $USERNAME
 
+# Install UV package manager
+RUN pip install uv
+ENV UV_SYSTEM_PYTHON=1 \
+    UV_PROJECT_ENVIRONMENT="/usr/local"
+
+# Install Python development tools (mostly required by devcontainer.json)
+RUN uv install pytest black isort pylint
+
+# Install JupyterLab
+RUN uv pip install --system jupyterlab
+
 # Copy project configuration and install dependencies
 COPY pyproject.toml .
-RUN uv pip install --system .[dev] # Install base + dev dependencies into the system environment
+# Install base + dev dependencies into the system environment
+RUN uv pip install --system .[dev]
+
 # =========================================================================
 # This section can be used to add additional customizations
 # CUSTOM EXTENSIONS SECTION - Add your custom installations below this line
@@ -73,12 +77,15 @@ RUN mkdir -p ~/.config && \
 # Create symbolic link to bind neovim to vim command
 RUN sudo ln -sf $(which nvim) /usr/local/bin/vim
 
-# Install Claude Code
-RUN npm install -g @anthropic-ai/claude-code
-
 # Install aider-chat
 RUN uv tool install --force --python python3.12 aider-chat@latest
 
+# Install Node.js using NodeSource
+RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash - && \
+    apt-get install -y nodejs
+
+# Install Claude Code
+RUN npm install -g @anthropic-ai/claude-code
 
 # END OF CUSTOM EXTENSIONS SECTION
 # =========================================================================
