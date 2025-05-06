@@ -19,12 +19,21 @@
                 "terminal.integrated.defaultProfile.linux": "zsh"
             },
             "extensions": [
+                // Python
                 "ms-python.python",
                 "ms-python.vscode-pylance",
-                "ms-azuretools.vscode-docker",
+                // TypeScript
                 "ms-vscode.vscode-typescript-next",
+                // Docker
+                "ms-azuretools.vscode-docker",
+                // Editors
+                "ms-toolsai.jupyter",
+                "asvetliakov.vscode-neovim",
+                // AI
+                "augment.vscode-augment",
+                "saoudrizwan.claude-dev",
+                "rooveterinaryinc.roo-cline",
                 "github.copilot",
-                "asvetliakov.vscode-neovim"
             ]
         }
     },
@@ -34,7 +43,9 @@
             "version": "latest"
         }
     },
-    "forwardPorts": [8888],
+    "forwardPorts": [
+        8888
+    ],
     "postCreateCommand": "echo 'Dev container is ready!'",
     "remoteEnv": {
         "PATH": "${containerEnv:PATH}:/home/user/.local/bin"
