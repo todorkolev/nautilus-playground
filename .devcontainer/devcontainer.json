@@ -22,22 +22,20 @@
                 // Python
                 "ms-python.python",
                 "ms-python.vscode-pylance",
+                "ms-toolsai.jupyter",
                 // TypeScript
                 "ms-vscode.vscode-typescript-next",
                 // Docker
                 "ms-azuretools.vscode-docker",
-                // Editors
-                "ms-toolsai.jupyter",
-                "asvetliakov.vscode-neovim",
                 // AI
-                "augment.vscode-augment",
+                // "augment.vscode-augment",
                 "saoudrizwan.claude-dev",
                 "rooveterinaryinc.roo-cline",
                 "github.copilot",
             ]
         }
     },
-    "remoteUser": "user",
+    "remoteUser": "root",
     "features": {
         "ghcr.io/devcontainers/features/git:1": {
             "version": "latest"
@@ -47,7 +45,5 @@
         8888
     ],
     "postCreateCommand": "echo 'Dev container is ready!'",
-    "remoteEnv": {
-        "PATH": "${containerEnv:PATH}:/home/user/.local/bin"
-    }
+    "remoteEnv": {}
 }

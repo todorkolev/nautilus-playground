@@ -1,15 +1,21 @@
 FROM python:3.12-slim
 
+COPY --from=ghcr.io/nautechsystems/jupyterlab:latest@sha256:344f2324a477d331966a15fbe8b13c6ff5be085d62127ad2fc30516582140ee0 \
+    /catalog /catalog/ 
+
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    NAUTILUS_PATH='nautilus_data'
+    PYTHONUNBUFFERED=1 \ 
+    NAUTILUS_PATH='/'
 
 # Set working directory
 WORKDIR /workspace
 
 # Ensure we're running as root for system installations
 USER root
+
+# Set the PATH to include the local bin directory
+ENV PATH="/root/.local/bin:$PATH"
 
 # Install system dependencies including curl
 RUN apt-get update && \
@@ -31,25 +37,12 @@ ENV UV_SYSTEM_PYTHON=1 \
 # Install Python development tools (mostly required by devcontainer.json)
 RUN uv pip install pytest black isort pylint
 
-# Install JupyterLab
-RUN uv pip install --system jupyterlab
+# Install JupyterLab and DataFusion
+RUN uv pip install --system jupyterlab datafusion
 
 # Copy requirements and install dependencies
 COPY requirements.txt .
 RUN uv pip install --system -r requirements.txt
-
-# Create a non-root user with sudo access
-ARG USERNAME=user
-ARG USER_UID=1000
-ARG USER_GID=$USER_UID
-
-RUN groupadd --gid $USER_GID $USERNAME \
-    && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
-    && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
-    && chmod 0440 /etc/sudoers.d/$USERNAME
-
-# Switch to non-root user
-USER $USERNAME
 
 # =========================================================================
 # This section can be used to add additional customizations
@@ -58,16 +51,16 @@ USER $USERNAME
 # Install oh-my-zsh
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
 
-# Install Neovim
-RUN sudo apt-get update && \
-    sudo apt-get install -y neovim && \
-    sudo apt-get clean && \
-    sudo rm -rf /var/lib/apt/lists/*
-# Install NvChad
-RUN mkdir -p ~/.config && \
-    git clone https://github.com/NvChad/NvChad ~/.config/nvim --depth 1
-# Create symbolic link to bind neovim to vim command
-RUN sudo ln -sf $(which nvim) /usr/local/bin/vim
+# # Install Neovim
+# RUN sudo apt-get update && \
+#     sudo apt-get install -y neovim && \
+#     sudo apt-get clean && \
+#     sudo rm -rf /var/lib/apt/lists/*
+# # Install NvChad
+# RUN mkdir -p ~/.config && \
+#     git clone https://github.com/NvChad/NvChad ~/.config/nvim --depth 1
+# # Create symbolic link to bind neovim to vim command
+# RUN sudo ln -sf $(which nvim) /usr/local/bin/vim
 
 # # Install Node.js using NodeSource
 # RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash - && \
@@ -84,3 +77,18 @@ RUN sudo ln -sf $(which nvim) /usr/local/bin/vim
 
 # Start JupyterLab
 CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
+
+# ========================= FOLDER STRUCTURE ============================
+# data
+#   test_data
+#   catalog
+# node
+#   execution
+#   indicators
+#   notebooks
+#   strategies
+#   main.py
+#   run_example.py
+# nautilus
+#   docs
+#   examples
