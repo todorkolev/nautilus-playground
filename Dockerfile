@@ -79,6 +79,11 @@ RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master
 CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
 
 # ========================= FOLDER STRUCTURE ============================
+
+# .ai
+#   docs
+#   propmt
+#   spec
 # data
 #   test_data
 #   catalog
@@ -87,7 +92,8 @@ CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-r
 #   indicators
 #   notebooks
 #   strategies
-#   main.py
+#   main_live.py
+#   main_backtest.py
 #   run_example.py
 # nautilus
 #   docs
