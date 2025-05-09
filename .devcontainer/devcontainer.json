@@ -25,13 +25,15 @@
                 "ms-toolsai.jupyter",
                 // TypeScript
                 "ms-vscode.vscode-typescript-next",
-                // Docker
-                "ms-azuretools.vscode-docker",
                 // AI
-                // "augment.vscode-augment",
+                // 1. Define specs in Cline's Plan mode
                 "saoudrizwan.claude-dev",
+                // 2. Execute specs in RooCode's Boomerang mode
                 "rooveterinaryinc.roo-cline",
-                "github.copilot",
+                // 3. Refine the code with an assistant
+                //    (use one ot them but not both, because they are incompatible)
+                // "github.copilot",
+                "augment.vscode-augment",
             ]
         }
     },

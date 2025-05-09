@@ -38,7 +38,7 @@ ENV UV_SYSTEM_PYTHON=1 \
 RUN uv pip install pytest black isort pylint
 
 # Install JupyterLab and DataFusion
-RUN uv pip install --system jupyterlab datafusion
+RUN uv pip install --system jupyterlab
 
 # Copy requirements and install dependencies
 COPY requirements.txt .
@@ -51,6 +51,12 @@ RUN uv pip install --system -r requirements.txt
 # Install oh-my-zsh
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
 
+# Install Node.js using NodeSource
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
 # # Install Neovim
 # RUN sudo apt-get update && \
 #     sudo apt-get install -y neovim && \
@@ -61,10 +67,6 @@ RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master
 #     git clone https://github.com/NvChad/NvChad ~/.config/nvim --depth 1
 # # Create symbolic link to bind neovim to vim command
 # RUN sudo ln -sf $(which nvim) /usr/local/bin/vim
-
-# # Install Node.js using NodeSource
-# RUN curl -fsSL https://deb.nodesource.com/setup_current.x | bash - && \
-#     apt-get install -y nodejs
 
 # # Install Claude Code
 # RUN npm install -g @anthropic-ai/claude-code
@@ -77,24 +79,3 @@ RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master
 
 # Start JupyterLab
 CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
-
-# ========================= FOLDER STRUCTURE ============================
-
-# .ai
-#   docs
-#   propmt
-#   spec
-# data
-#   test_data
-#   catalog
-# node
-#   execution
-#   indicators
-#   notebooks
-#   strategies
-#   main_live.py
-#   main_backtest.py
-#   run_example.py
-# nautilus
-#   docs
-#   examples
