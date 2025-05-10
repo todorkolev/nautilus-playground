@@ -1,0 +1,8 @@
+{
+    // Disable GitHub Copilot 
+    // (conflicting with Augment;
+    // commit message generation still works)
+    "github.copilot.enable": {
+        "*": false
+    }
+}

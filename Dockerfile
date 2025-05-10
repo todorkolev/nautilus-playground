@@ -1,15 +1,15 @@
 FROM python:3.12-slim
 
 COPY --from=ghcr.io/nautechsystems/jupyterlab:latest@sha256:344f2324a477d331966a15fbe8b13c6ff5be085d62127ad2fc30516582140ee0 \
-    /catalog /catalog/ 
+    /catalog /catalog/
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \ 
+    PYTHONUNBUFFERED=1 \
     NAUTILUS_PATH='/'
 
 # Set working directory
-WORKDIR /workspace
+WORKDIR /workspaces/nautilus-playground
 
 # Ensure we're running as root for system installations
 USER root
@@ -43,6 +43,13 @@ RUN uv pip install --system jupyterlab
 # Copy requirements and install dependencies
 COPY requirements.txt .
 RUN uv pip install --system -r requirements.txt
+
+# Copy the update script
+COPY scripts/update_nautilus.py /workspaces/nautilus-playground/scripts/update_nautilus.py
+# Update Nautilus Trader docs and examples
+RUN cd /workspaces/nautilus-playground && \
+    chmod +x scripts/update_nautilus.py && \
+    python scripts/update_nautilus.py
 
 # =========================================================================
 # This section can be used to add additional customizations

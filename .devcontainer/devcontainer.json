@@ -26,14 +26,9 @@
                 // TypeScript
                 "ms-vscode.vscode-typescript-next",
                 // AI
-                // 1. Define specs in Cline's Plan mode
-                "saoudrizwan.claude-dev",
-                // 2. Execute specs in RooCode's Boomerang mode
-                "rooveterinaryinc.roo-cline",
-                // 3. Refine the code with an assistant
-                //    (use one ot them but not both, because they are incompatible)
-                // "github.copilot",
                 "augment.vscode-augment",
+                "rooveterinaryinc.roo-cline",
+                "github.copilot",
             ]
         }
     },
