@@ -71,6 +71,24 @@ You can also specify start and end dates:
 python src/main_backtest.py --config path/to/config.yaml --start-date 2023-01-01 --end-date 2023-12-31
 ```
 
+### Mean Reversion Strategy
+
+This project includes a mean reversion strategy with ADX (Average Directional Index) as a trend filter. The strategy combines mean reversion and trend following approaches:
+
+1. **Mean Reversion Mode**: When ADX indicates low trend strength (ADX < 20 for daily and < 30 for hourly), the strategy looks for mean reversion opportunities. It uses the Augmented Dickey-Fuller test to confirm stationarity and the Ornstein-Uhlenbeck process to model price movements.
+
+2. **Trend Following Mode**: When ADX indicates strong trend strength (ADX > 50 for hourly), the strategy switches to trend following, using +DI and -DI to determine trend direction.
+
+To run the mean reversion strategy backtest:
+
+```bash
+# First download the required data
+python scripts/download_data.py --symbols BTCUSDT --timeframes 1h 1d --days 90
+
+# Then run the backtest
+python src/main_backtest.py
+```
+
 ### Live Trading
 
 To run a live trading node:

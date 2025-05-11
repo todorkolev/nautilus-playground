@@ -331,17 +331,20 @@ def download_historical_data(
         ts_event = int(timestamp.timestamp() * 1_000_000_000)
 
         # Create bar
-        bar = Bar(
-            bar_type=bar_type,
-            open=Price.from_str(str(row["open"])),
-            high=Price.from_str(str(row["high"])),
-            low=Price.from_str(str(row["low"])),
-            close=Price.from_str(str(row["close"])),
-            volume=Quantity.from_str(f"{row['volume']:.6f}"),
-            ts_event=ts_event,
-            ts_init=ts_event,  # Use same timestamp for simplicity
-        )
-        bars.append(bar)
+        try:
+            bar = Bar(
+                bar_type=bar_type,
+                open=Price.from_str(str(row["open"])),
+                high=Price.from_str(str(row["high"])),
+                low=Price.from_str(str(row["low"])),
+                close=Price.from_str(str(row["close"])),
+                volume=Quantity.from_str(f"{row['volume']:.6f}"),
+                ts_event=ts_event,
+                ts_init=ts_event,  # Use same timestamp for simplicity
+            )
+            bars.append(bar)
+        except Exception as e:
+            logger.warning(f"Error creating bar for {timestamp}: {e}")
 
     # Write bars to catalog
     catalog.write_data(bars)
