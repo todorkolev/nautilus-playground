@@ -4,5 +4,17 @@
     // commit message generation still works)
     "github.copilot.enable": {
         "*": false
+    },
+    "augment.advanced": {
+        "mcpServers": [
+            {
+                "name": "context7",
+                "command": "npx",
+                "args": [
+                    "-y",
+                    "@upstash/context7-mcp@latest"
+                ]
+            }
+        ]
     }
 }
