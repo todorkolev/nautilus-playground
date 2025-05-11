@@ -1,0 +1,1 @@
+Use the "context7" tool on each step to research the latest documentation for the current task and apply the best practices.

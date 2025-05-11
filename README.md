@@ -53,6 +53,7 @@ Detailed documentation is available in the `docs/` directory:
 - [Indicators](docs/indicators.md): Documentation for technical indicators
 - [Notebooks](docs/notebooks.md): Documentation for Jupyter notebooks
 - [Strategies](docs/strategies.md): Documentation for trading strategies
+- [Live Trading](docs/live_trading.md): Guide for setting up and running live trading with Binance
 
 ## Running Examples
 
@@ -75,14 +76,22 @@ python src/main_backtest.py --config path/to/config.yaml --start-date 2023-01-01
 To run a live trading node:
 
 ```bash
+python src/main_live.py
+```
+
+For paper trading (using Binance testnet):
+
+```bash
+python src/main_live.py --paper
+```
+
+To use a custom configuration file (if needed):
+
+```bash
 python src/main_live.py --config path/to/config.yaml
 ```
 
-For paper trading:
-
-```bash
-python src/main_live.py --config path/to/config.yaml --paper
-```
+See the [Live Trading Guide](docs/live_trading.md) for detailed setup instructions.
 
 ## Development Tools
 

@@ -15,17 +15,32 @@ This document provides an overview of the source code structure for the Nautilus
 
 ### Live Trading
 
-To run a live trading node:
+The `main_live.py` script provides a flexible entry point for live trading with Binance. It supports:
+
+- Loading configuration from environment variables (via `.env` file)
+- Loading configuration from a YAML file
+- Paper trading mode using the Binance testnet
+- Customizable logging levels
+
+Basic usage:
+
+```bash
+python src/main_live.py
+```
+
+For paper trading (using Binance testnet):
+
+```bash
+python src/main_live.py --paper
+```
+
+With a custom configuration file (if needed):
 
 ```bash
 python src/main_live.py --config path/to/config.yaml
 ```
 
-For paper trading:
-
-```bash
-python src/main_live.py --config path/to/config.yaml --paper
-```
+For detailed setup instructions, see the [Live Trading Guide](live_trading.md).
 
 ### Backtesting
 
