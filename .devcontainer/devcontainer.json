@@ -42,5 +42,6 @@
         8888
     ],
     "postCreateCommand": "echo 'Dev container is ready!'",
+    "postStartCommand": "bash -c '/workspaces/nautilus-playground/scripts/start_jupyter.sh'",
     "remoteEnv": {}
 }
