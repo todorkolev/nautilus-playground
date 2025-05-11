@@ -1,0 +1,25 @@
+# Moving Average Crossover Strategy Configuration
+strategy:
+  name: MovingAverageCrossoverStrategy
+  module: src.strategies.moving_average_crossover.strategy
+  class: MovingAverageCrossover
+  config_class: MovingAverageCrossoverConfig
+
+parameters:
+  # Required parameters
+  instrument_id: BTCUSDT.BINANCE
+  bar_type: BTCUSDT.BINANCE-1-HOUR-LAST-EXTERNAL
+
+  # Trading parameters
+  trade_size: 0.1
+
+  # Strategy parameters
+  fast_ema_period: 10
+  slow_ema_period: 20
+
+data:
+  # Data requirements
+  instruments:
+    - id: BTCUSDT.BINANCE
+      bar_types:
+        - 1-HOUR

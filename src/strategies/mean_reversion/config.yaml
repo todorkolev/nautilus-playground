@@ -1,0 +1,36 @@
+# Mean Reversion Strategy Configuration
+strategy:
+  name: MeanReversionStrategy
+  module: src.strategies.mean_reversion.strategy
+  class: MeanReversionStrategy
+  config_class: MeanReversionConfig
+
+parameters:
+  # Required parameters
+  instrument_id: BTCUSDT.BINANCE
+  bar_type: BTCUSDT.BINANCE-1-HOUR-LAST-EXTERNAL
+
+  # Trading parameters
+  trade_size: 0.1
+  positions_per_side: 3
+
+  # Strategy parameters
+  lookback: 168  # 7 days of hourly data
+  std_dev_threshold: 2.0
+
+  # Take profit and stop loss parameters
+  take_profit_std_dev_multiplier: 1.0
+  stop_loss_std_dev_multiplier: 2.0
+  take_profit_hold: 480  # 8 hours in minutes
+  take_profit_decay: 2880  # 48 hours in minutes
+  stop_loss_hold: 480  # 8 hours in minutes
+  stop_loss_decay: 2880  # 48 hours in minutes
+  trailing_stop_pct: 0.005  # 0.5%
+
+data:
+  # Data requirements
+  instruments:
+    - id: BTCUSDT.BINANCE
+      bar_types:
+        - 1-HOUR
+        - 1-DAY

@@ -20,24 +20,35 @@ Entry point for running a backtest node.
 Before running this script, make sure you have downloaded the required data
 using the scripts/download_data.py script:
 
-    python scripts/download_data.py --symbols BTCUSDT --timeframes 1h
+    python scripts/download_data.py --symbols BTCUSDT --timeframes 1h 1d
 
 This will download the data and write it directly to the Nautilus Trader catalog
 at data/catalog, which is used by this script.
+
+You can run a backtest with a specific strategy by providing the path to its
+configuration file:
+
+    python src/main_backtest.py --strategy src/strategies/mean_reversion/config.yaml
+
+Or run multiple strategies at once:
+
+    python src/main_backtest.py --strategy src/strategies/mean_reversion/config.yaml src/strategies/moving_average_crossover/config.yaml
 """
 
 import argparse
 import logging
 import os
 import sys
+import yaml
 from datetime import datetime
 from pathlib import Path
+from typing import Dict, List, Optional, Any
 
 # Add the current directory to the Python path
 sys.path.insert(0, os.getcwd())
 
-from nautilus_trader.backtest.node import BacktestNode
-from nautilus_trader.config import BacktestRunConfig, BacktestEngineConfig
+from nautilus_trader.backtest.node import BacktestNode, BacktestDataConfig, BacktestVenueConfig
+from nautilus_trader.config import BacktestRunConfig, BacktestEngineConfig, ImportableStrategyConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.model.currencies import USDT
 
@@ -55,7 +66,14 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=str,
         default=None,
-        help="Path to the configuration file",
+        help="Path to the backtest configuration file",
+    )
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Path(s) to strategy configuration file(s)",
     )
     parser.add_argument(
         "--start-date",
@@ -79,6 +97,107 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def load_strategy_config(config_path: str) -> Dict[str, Any]:
+    """
+    Load a strategy configuration from a YAML file.
+
+    Parameters
+    ----------
+    config_path : str
+        Path to the strategy configuration file.
+
+    Returns
+    -------
+    Dict[str, Any]
+        The strategy configuration.
+    """
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
+
+
+def create_importable_strategy_config(config_path: str) -> ImportableStrategyConfig:
+    """
+    Create an ImportableStrategyConfig from a strategy configuration file.
+
+    Parameters
+    ----------
+    config_path : str
+        Path to the strategy configuration file.
+
+    Returns
+    -------
+    ImportableStrategyConfig
+        The importable strategy configuration.
+    """
+    config_dict = load_strategy_config(config_path)
+
+    strategy_info = config_dict.get("strategy", {})
+    strategy_module = strategy_info.get("module")
+    strategy_class = strategy_info.get("class")
+    config_class = strategy_info.get("config_class")
+
+    if not strategy_module or not strategy_class or not config_class:
+        raise ValueError(f"Invalid strategy configuration in {config_path}")
+
+    # Create the importable strategy config
+    return ImportableStrategyConfig(
+        strategy_path=f"{strategy_module}:{strategy_class}",
+        config_path=f"{strategy_module}:{config_class}",
+        config=config_dict.get("parameters", {}),
+    )
+
+
+def create_data_configs(strategy_configs: List[str], start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[BacktestDataConfig]:
+    """
+    Create data configurations from strategy configuration files.
+
+    Parameters
+    ----------
+    strategy_configs : List[str]
+        Paths to strategy configuration files.
+    start_date : Optional[str]
+        Start date for the backtest.
+    end_date : Optional[str]
+        End date for the backtest.
+
+    Returns
+    -------
+    List[BacktestDataConfig]
+        The data configurations.
+    """
+    from nautilus_trader.model.data import Bar
+
+    data_configs = []
+    processed_instruments = set()
+
+    for config_path in strategy_configs:
+        config_dict = load_strategy_config(config_path)
+        data_config = config_dict.get("data", {})
+        instruments = data_config.get("instruments", [])
+
+        for instrument in instruments:
+            instrument_id = instrument.get("id")
+            if not instrument_id or instrument_id in processed_instruments:
+                continue
+
+            processed_instruments.add(instrument_id)
+            bar_types = instrument.get("bar_types", [])
+
+            for bar_spec in bar_types:
+                data_configs.append(
+                    BacktestDataConfig(
+                        catalog_path="data/catalog",
+                        data_cls=Bar,
+                        instrument_id=instrument_id,
+                        bar_spec=bar_spec,
+                        start_time=start_date,
+                        end_time=end_date,
+                    )
+                )
+
+    return data_configs
+
+
 def main() -> None:
     """
     Run the backtest node.
@@ -97,47 +216,31 @@ def main() -> None:
 
         # Load configuration from file
         config = BacktestRunConfig.from_yaml(str(config_path))
-    else:
-        # Use default configuration with Moving Average Crossover strategy
-        logger.info("Using default configuration with Moving Average Crossover strategy")
+    elif args.strategy:
+        # Load strategy configurations
+        strategy_paths = args.strategy
+        strategies = []
 
-        from decimal import Decimal
-        from nautilus_trader.config import ImportableStrategyConfig
-        from nautilus_trader.backtest.node import BacktestDataConfig, BacktestVenueConfig
+        for path in strategy_paths:
+            strategy_path = Path(path)
+            if not strategy_path.exists():
+                logger.error(f"Strategy configuration file not found: {strategy_path}")
+                sys.exit(1)
 
-        # Define the instrument ID
-        instrument_id = "BTCUSDT.BINANCE"
+            try:
+                strategy_config = create_importable_strategy_config(str(strategy_path))
+                strategies.append(strategy_config)
+                logger.info(f"Loaded strategy configuration from {strategy_path}")
+            except Exception as e:
+                logger.error(f"Error loading strategy configuration from {strategy_path}: {e}")
+                sys.exit(1)
 
-        # Define the bar type
-        bar_type = f"{instrument_id}-1-HOUR-LAST-EXTERNAL"
-
-        # Create strategy configuration
-        strategies = [
-            ImportableStrategyConfig(
-                strategy_path="src.strategies.moving_average_crossover:MovingAverageCrossover",
-                config_path="src.strategies.moving_average_crossover:MovingAverageCrossoverConfig",
-                config={
-                    "instrument_id": instrument_id,
-                    "bar_type": bar_type,
-                    "fast_ema_period": 10,
-                    "slow_ema_period": 20,
-                    "trade_size": Decimal("0.1"),
-                },
-            ),
-        ]
-
-        # Create data configuration
-        from nautilus_trader.model.data import Bar
-
-        # We'll use the data from the Nautilus Trader catalog
-        data_configs = [
-            BacktestDataConfig(
-                catalog_path="data/catalog",
-                data_cls=Bar,
-                instrument_id=instrument_id,
-                bar_spec="1-HOUR",
-            ),
-        ]
+        # Create data configurations
+        data_configs = create_data_configs(
+            strategy_paths,
+            start_date=args.start_date,
+            end_date=args.end_date,
+        )
 
         # Create venue configuration
         venue_configs = [
@@ -145,8 +248,52 @@ def main() -> None:
                 name="BINANCE",
                 oms_type="NETTING",
                 account_type="MARGIN",
-                base_currency=USDT,  # Use None for multi-currency account
-                starting_balances=["1000000 USDT"],  # Include both currencies
+                base_currency=USDT,
+                starting_balances=["1000000 USDT"],
+            ),
+        ]
+
+        # Create the backtest run configuration
+        config = BacktestRunConfig(
+            engine=BacktestEngineConfig(
+                strategies=strategies,
+                logging=LoggingConfig(log_level=args.log_level),
+            ),
+            data=data_configs,
+            venues=venue_configs,
+        )
+    else:
+        # Use default configuration with Mean Reversion strategy
+        logger.info("No strategy specified, using default Mean Reversion strategy")
+
+        default_strategy_path = "src/strategies/mean_reversion/config.yaml"
+        if not Path(default_strategy_path).exists():
+            logger.error(f"Default strategy configuration file not found: {default_strategy_path}")
+            sys.exit(1)
+
+        try:
+            strategy_config = create_importable_strategy_config(default_strategy_path)
+            strategies = [strategy_config]
+            logger.info(f"Loaded default strategy configuration from {default_strategy_path}")
+        except Exception as e:
+            logger.error(f"Error loading default strategy configuration: {e}")
+            sys.exit(1)
+
+        # Create data configurations
+        data_configs = create_data_configs(
+            [default_strategy_path],
+            start_date=args.start_date,
+            end_date=args.end_date,
+        )
+
+        # Create venue configuration
+        venue_configs = [
+            BacktestVenueConfig(
+                name="BINANCE",
+                oms_type="NETTING",
+                account_type="MARGIN",
+                base_currency=USDT,
+                starting_balances=["1000000 USDT"],
             ),
         ]
 
@@ -182,7 +329,7 @@ def main() -> None:
     try:
         # Initialize and run the backtest node
         node = BacktestNode(configs=[config])
-        result = node.run()
+        node.run()
 
         # Print summary results
         logger.info("Backtest completed successfully")
