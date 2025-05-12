@@ -44,7 +44,7 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Price
 from nautilus_trader.trading.strategy import Strategy
 
-from src.indicators.adx import AverageDirectionalIndex
+from src.indicators.pandas_ta_indicator import PandasTaIndicator
 from src.strategies.position_management import Position, Side, ShrinkingRangePosition, TrailingStopPosition
 
 
@@ -213,15 +213,17 @@ class MeanReversionStrategy(Strategy):
         # Get instrument (may be None during backtesting setup)
         self.instrument = None  # Will be set in on_start
 
-        # Create indicators
-        self.adx_hourly = AverageDirectionalIndex(
+        # Create indicators using PandasTaIndicator
+        self.adx_hourly = PandasTaIndicator(
             bar_type=self.bar_type,
-            period=14,
+            indicator_name="adx",
+            params={"length": 14},
         )
 
-        self.adx_daily = AverageDirectionalIndex(
+        self.adx_daily = PandasTaIndicator(
             bar_type=BarType.from_str(f"{self.instrument_id.value}-1-DAY-LAST-EXTERNAL"),
-            period=14,
+            indicator_name="adx",
+            params={"length": 14},
         )
 
         # Initialize state
@@ -252,9 +254,8 @@ class MeanReversionStrategy(Strategy):
                 self._log.warning(f"Instrument {self.instrument_id} not found in cache")
                 return
 
-        # Register the indicators for updating
-        self.register_indicator_for_bars(self.bar_type, self.adx_hourly)
-        self.register_indicator_for_bars(BarType.from_str(f"{self.instrument_id.value}-1-DAY-LAST-EXTERNAL"), self.adx_daily)
+        # No need to register indicators for updating with PandasTaIndicator
+        # They will be updated directly in the handle_bar method
 
         # Get historical data
         self.request_bars(self.bar_type)
@@ -264,21 +265,21 @@ class MeanReversionStrategy(Strategy):
         self.subscribe_bars(self.bar_type)
         self.subscribe_bars(BarType.from_str(f"{self.instrument_id.value}-1-DAY-LAST-EXTERNAL"))
 
-        # Force initialize ADX indicators with default values
-        self._log.info("Manually initializing ADX indicators")
-        self.adx_hourly._initialized = True
-        self.adx_daily._initialized = True
+        # # Force initialize ADX indicators with default values
+        # self._log.info("Manually initializing ADX indicators")
+        # self.adx_hourly._initialized = True
+        # self.adx_daily._initialized = True
 
-        # Set some default values for testing
-        self.adx_hourly.adx_values = np.array([15.0])
-        self.adx_daily.adx_values = np.array([15.0])
-        self.adx_hourly.plus_di_values = np.array([20.0])
-        self.adx_hourly.minus_di_values = np.array([10.0])
-        self.adx_daily.plus_di_values = np.array([20.0])
-        self.adx_daily.minus_di_values = np.array([10.0])
+        # # Set some default values for testing
+        # self.adx_hourly.adx_values = np.array([15.0])
+        # self.adx_daily.adx_values = np.array([15.0])
+        # self.adx_hourly.plus_di_values = np.array([20.0])
+        # self.adx_hourly.minus_di_values = np.array([10.0])
+        # self.adx_daily.plus_di_values = np.array([20.0])
+        # self.adx_daily.minus_di_values = np.array([10.0])
 
-        self._log.info(f"ADX Hourly initialized: {self.adx_hourly.initialized}, value: {self.adx_hourly.value}")
-        self._log.info(f"ADX Daily initialized: {self.adx_daily.initialized}, value: {self.adx_daily.value}")
+        # self._log.info(f"ADX Hourly initialized: {self.adx_hourly.initialized}, value: {self.adx_hourly.value}")
+        # self._log.info(f"ADX Daily initialized: {self.adx_daily.initialized}, value: {self.adx_daily.value}")
 
     def on_stop(self) -> None:
         """
@@ -342,9 +343,10 @@ class MeanReversionStrategy(Strategy):
         data : Data
             The data received.
         """
-        # Check if the data is a Bar and matches our bar type
-        if isinstance(data, Bar) and data.bar_type == self.bar_type:
-            self.handle_bar(data)
+        # Check if the data is a Bar and handle both hourly and daily bars
+        if isinstance(data, Bar):
+            if data.bar_type == self.bar_type or data.bar_type == BarType.from_str(f"{self.instrument_id.value}-1-DAY-LAST-EXTERNAL"):
+                self.handle_bar(data)
 
     def handle_bar(self, bar: Bar) -> None:
         """
@@ -361,6 +363,12 @@ class MeanReversionStrategy(Strategy):
         # Keep only the last 'lookback' number of bars
         if len(self.hour_bars) > self.lookback:
             self.hour_bars = self.hour_bars[-self.lookback:]
+
+        # Update indicators based on bar type
+        if bar.bar_type == self.bar_type:
+            self.adx_hourly.handle_bar(bar)
+        elif bar.bar_type == BarType.from_str(f"{self.instrument_id.value}-1-DAY-LAST-EXTERNAL"):
+            self.adx_daily.handle_bar(bar)
 
         # Update positions
         for side in Side:
@@ -442,10 +450,12 @@ class MeanReversionStrategy(Strategy):
             # Check if price is far from mean
             if abs(distance) > 2 * self.std_dev_threshold:
                 # Determine trend direction
-                plus_di = self.adx_hourly.positive_directional_index
-                minus_di = self.adx_hourly.negative_directional_index
+                # Access additional values from pandas_ta ADX indicator
+                # pandas_ta ADX returns a DataFrame with columns: ADX, DMP (plus_di), DMN (minus_di)
+                plus_di = self.adx_hourly.additional_values.get('DMP')
+                minus_di = self.adx_hourly.additional_values.get('DMN')
 
-                self._log.info(f"+DI: {plus_di:.2f}, -DI: {minus_di:.2f}")
+                self._log.info(f"+DI: {plus_di:.2f if plus_di is not None else 'None'}, -DI: {minus_di:.2f if minus_di is not None else 'None'}")
 
                 if (distance > 0 and plus_di is not None and minus_di is not None and
                     plus_di > minus_di):

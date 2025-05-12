@@ -28,11 +28,12 @@ at data/catalog, which is used by this script.
 You can run a backtest with a specific strategy by providing the path to its
 configuration file:
 
-    python src/main_backtest.py --strategy src/strategies/mean_reversion/config.yaml
+    python src/main_backtest.py --strategy src/strategies/moving_average_crossover/config.yaml
 
 Or run multiple strategies at once:
 
-    python src/main_backtest.py --strategy src/strategies/mean_reversion/config.yaml src/strategies/moving_average_crossover/config.yaml
+    python src/main_backtest.py --strategy src/strategies/moving_average_crossover/config.yaml src/strategies/moving_average_crossover/config.yaml
+
 """
 
 import argparse
@@ -219,93 +220,53 @@ def main() -> None:
     elif args.strategy:
         # Load strategy configurations
         strategy_paths = args.strategy
-        strategies = []
-
-        for path in strategy_paths:
-            strategy_path = Path(path)
-            if not strategy_path.exists():
-                logger.error(f"Strategy configuration file not found: {strategy_path}")
-                sys.exit(1)
-
-            try:
-                strategy_config = create_importable_strategy_config(str(strategy_path))
-                strategies.append(strategy_config)
-                logger.info(f"Loaded strategy configuration from {strategy_path}")
-            except Exception as e:
-                logger.error(f"Error loading strategy configuration from {strategy_path}: {e}")
-                sys.exit(1)
-
-        # Create data configurations
-        data_configs = create_data_configs(
-            strategy_paths,
-            start_date=args.start_date,
-            end_date=args.end_date,
-        )
-
-        # Create venue configuration
-        venue_configs = [
-            BacktestVenueConfig(
-                name="BINANCE",
-                oms_type="NETTING",
-                account_type="MARGIN",
-                base_currency=USDT,
-                starting_balances=["1000000 USDT"],
-            ),
-        ]
-
-        # Create the backtest run configuration
-        config = BacktestRunConfig(
-            engine=BacktestEngineConfig(
-                strategies=strategies,
-                logging=LoggingConfig(log_level=args.log_level),
-            ),
-            data=data_configs,
-            venues=venue_configs,
-        )
     else:
-        # Use default configuration with Mean Reversion strategy
-        logger.info("No strategy specified, using default Mean Reversion strategy")
+        # Use default configuration with Moving Average Crossover strategy
+        logger.info("No strategy specified, using default Moving Average Crossover strategy")
+        strategy_paths = ["src/strategies/moving_average_crossover/config.yaml"]
 
-        default_strategy_path = "src/strategies/mean_reversion/config.yaml"
-        if not Path(default_strategy_path).exists():
-            logger.error(f"Default strategy configuration file not found: {default_strategy_path}")
+    strategies = []
+    for path in strategy_paths:
+        strategy_path = Path(path)
+        if not strategy_path.exists():
+            logger.error(f"Strategy configuration file not found: {strategy_path}")
             sys.exit(1)
 
         try:
-            strategy_config = create_importable_strategy_config(default_strategy_path)
-            strategies = [strategy_config]
-            logger.info(f"Loaded default strategy configuration from {default_strategy_path}")
+            strategy_config = create_importable_strategy_config(str(strategy_path))
+            strategies.append(strategy_config)
+            logger.info(f"Loaded strategy configuration from {strategy_path}")
         except Exception as e:
-            logger.error(f"Error loading default strategy configuration: {e}")
+            logger.error(f"Error loading strategy configuration from {strategy_path}: {e}")
             sys.exit(1)
 
-        # Create data configurations
-        data_configs = create_data_configs(
-            [default_strategy_path],
-            start_date=args.start_date,
-            end_date=args.end_date,
-        )
+    # Create data configurations
+    data_configs = create_data_configs(
+        strategy_paths,
+        start_date=args.start_date,
+        end_date=args.end_date,
+    )
 
-        # Create venue configuration
-        venue_configs = [
-            BacktestVenueConfig(
-                name="BINANCE",
-                oms_type="NETTING",
-                account_type="MARGIN",
-                base_currency=USDT,
-                starting_balances=["1000000 USDT"],
-            ),
-        ]
+    # Create venue configuration
+    venue_configs = [
+        BacktestVenueConfig(
+            name="BINANCE",
+            oms_type="NETTING",
+            account_type="MARGIN",
+            base_currency=USDT,
+            starting_balances=["1000000 USDT"],
+        ),
+    ]
 
-        # Create the backtest run configuration
-        config = BacktestRunConfig(
-            engine=BacktestEngineConfig(
-                strategies=strategies,
-                logging=LoggingConfig(log_level=args.log_level),
-            ),
-            data=data_configs,
-            venues=venue_configs,
-        )
+    # Create the backtest run configuration
+    config = BacktestRunConfig(
+        engine=BacktestEngineConfig(
+            strategies=strategies,
+            logging=LoggingConfig(log_level=args.log_level),
+        ),
+        data=data_configs,
+        venues=venue_configs,
+    )
 
     # Override start and end dates if provided
     if args.start_date:

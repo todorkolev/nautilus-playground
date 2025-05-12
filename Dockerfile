@@ -1,6 +1,7 @@
 # FROM python:3.12-slim
 FROM quantconnect/lean:foundation
 
+# Copy data catalog from the Nautilus image
 COPY --from=ghcr.io/nautechsystems/jupyterlab:latest@sha256:344f2324a477d331966a15fbe8b13c6ff5be085d62127ad2fc30516582140ee0 \
     /catalog /catalog/
 
@@ -35,22 +36,22 @@ RUN pip install uv
 ENV UV_SYSTEM_PYTHON=1 \
     UV_PROJECT_ENVIRONMENT="/usr/local"
 
-# Install TA-Lib if not already installed
-RUN if [ ! -f /usr/local/lib/libta_lib.so ]; then \
-        wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
-        tar -xvzf ta-lib-0.4.0-src.tar.gz && \
-        cd ta-lib && \
-        ./configure --prefix=/usr/local --build=$(uname -m)-unknown-linux-gnu && \
-        make && \
-        make install && \
-        cd .. && \
-        rm -rf ta-lib ta-lib-0.4.0-src.tar.gz && \
-        # Create symlinks for Python wrapper compatibility
-        ln -s /usr/local/lib/libta_lib.so /usr/local/lib/libta-lib.so && \
-        ln -s /usr/local/lib/libta_lib.a /usr/local/lib/libta-lib.a; \
-    fi
-# Install Python wrapper for TA-Lib
-RUN uv pip install ta-lib
+# # Install TA-Lib if not already installed
+# RUN if [ ! -f /usr/local/lib/libta_lib.so ]; then \
+#         wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
+#         tar -xvzf ta-lib-0.4.0-src.tar.gz && \
+#         cd ta-lib && \
+#         ./configure --prefix=/usr/local --build=$(uname -m)-unknown-linux-gnu && \
+#         make && \
+#         make install && \
+#         cd .. && \
+#         rm -rf ta-lib ta-lib-0.4.0-src.tar.gz && \
+#         # Create symlinks for Python wrapper compatibility
+#         ln -s /usr/local/lib/libta_lib.so /usr/local/lib/libta-lib.so && \
+#         ln -s /usr/local/lib/libta_lib.a /usr/local/lib/libta-lib.a; \
+#     fi
+# # Install Python wrapper for TA-Lib
+# RUN uv pip install ta-lib
 
 # Install Python development tools (required by devcontainer.json)
 RUN uv pip install pytest black isort pylint

@@ -28,7 +28,6 @@ from nautilus_trader.backtest.node import BacktestDataConfig
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.data import Data
 from nautilus_trader.core.message import Event
-from nautilus_trader.indicators.average.ema import ExponentialMovingAverage
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import OrderSide
@@ -37,6 +36,7 @@ from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.trading.strategy import Strategy
 
+from src.indicators.pandas_ta_indicator import PandasTaIndicator
 
 class MovingAverageCrossoverConfig(StrategyConfig):
     """
@@ -156,16 +156,20 @@ class MovingAverageCrossover(Strategy):
         # Get instrument (may be None during backtesting setup)
         self.instrument = None  # Will be set in on_start
 
-        # Create indicators
+        # Create indicators using PandasTaIndicator
         from nautilus_trader.model.enums import PriceType
 
-        self.fast_ema = ExponentialMovingAverage(
-            period=self.fast_ema_period,
+        self.fast_ema = PandasTaIndicator(
+            bar_type=self.bar_type,
+            indicator_name="ema",
+            params={"length": self.fast_ema_period},
             price_type=PriceType.LAST,
         )
 
-        self.slow_ema = ExponentialMovingAverage(
-            period=self.slow_ema_period,
+        self.slow_ema = PandasTaIndicator(
+            bar_type=self.bar_type,
+            indicator_name="ema",
+            params={"length": self.slow_ema_period},
             price_type=PriceType.LAST,
         )
 
@@ -282,8 +286,8 @@ class MovingAverageCrossover(Strategy):
             The bar received.
         """
         # Update indicators
-        self.fast_ema.update_raw(bar.close.as_double())
-        self.slow_ema.update_raw(bar.close.as_double())
+        self.fast_ema.handle_bar(bar)
+        self.slow_ema.handle_bar(bar)
 
         # Check if indicators have values
         if self.fast_ema.value is None or self.slow_ema.value is None:

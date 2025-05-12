@@ -2,4 +2,3 @@ nautilus_trader>=1.217.0
 datafusion
 statsmodels
 pandas-ta
-ta-lib

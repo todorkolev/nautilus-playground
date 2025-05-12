@@ -1,5 +1,5 @@
 {
-    "name": "Python 3.12 Development",
+    "name": "Nautilus Trader Playground",
     "build": {
         "dockerfile": "../Dockerfile",
         "context": ".."
