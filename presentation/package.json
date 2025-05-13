@@ -1,0 +1,17 @@
+{
+  "name": "nautilus-playground-presentation",
+  "private": true,
+  "scripts": {
+    "build": "slidev build",
+    "dev": "slidev --open",
+    "export": "slidev export"
+  },
+  "dependencies": {
+    "@slidev/cli": "^0.48.0-beta.0",
+    "@slidev/theme-default": "latest",
+    "@slidev/theme-seriph": "latest"
+  },
+  "devDependencies": {
+    "playwright-chromium": "^1.42.1"
+  }
+}

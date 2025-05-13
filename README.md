@@ -348,6 +348,24 @@ The development container provides a rich environment with numerous libraries an
 - chronos-forecasting
 - matplotlib fonts
 
+## Presentation
+
+A Slidev presentation is available in the `presentation` directory. To run the presentation:
+
+```bash
+# Navigate to the presentation directory
+cd presentation
+
+# Run the presentation using the provided script
+./scripts/run.sh
+
+# Or manually
+pnpm install  # or npm install
+pnpm dev      # or npm run dev
+```
+
+This will start the presentation and open it in your default browser. For more information, see the [presentation README](presentation/README.md).
+
 ## License
 
 This project is licensed under the GNU Lesser General Public License v3.0 - see the LICENSE file for details.
