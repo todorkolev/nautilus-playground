@@ -29,6 +29,7 @@ dependencies = [
     "scipy>=1.10.0",
     "matplotlib>=3.7.0",
     "pyarrow>=11.0.0", 
+    "xgboost>=1.7.0", # Add xgboost dependency
 ]
 
 [project.optional-dependencies]

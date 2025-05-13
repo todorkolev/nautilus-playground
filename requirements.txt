@@ -1,4 +1,6 @@
 nautilus_trader>=1.217.0
+pandas-ta
+xgboost
+
 datafusion
 statsmodels
-pandas-ta

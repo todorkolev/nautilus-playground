@@ -23,8 +23,9 @@
                 "ms-python.python",
                 "ms-python.vscode-pylance",
                 "ms-toolsai.jupyter",
-                // TypeScript
-                "ms-vscode.vscode-typescript-next",
+                // Other languages
+                "ms-vscode.vscode-typescript-next", // TypeScript
+                "mechatroner.rainbow-csv", // CSV
                 // AI
                 "augment.vscode-augment",
                 "rooveterinaryinc.roo-cline",
