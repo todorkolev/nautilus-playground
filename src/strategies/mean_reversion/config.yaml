@@ -3,7 +3,7 @@ strategy:
   name: MeanReversionStrategy
   module: src.strategies.mean_reversion.strategy
   class: MeanReversionStrategy
-  config_class: MeanReversionConfig
+  config_class: MeanReversionStrategyConfig
 
 parameters:
   # Required parameters
@@ -19,7 +19,7 @@ parameters:
   std_dev_threshold: 2.0
 
   # Take profit and stop loss parameters
-  take_profit_std_dev_multiplier: 1.0
+  take_profit_std_dev_multiplier: 1.5
   stop_loss_std_dev_multiplier: 2.0
   take_profit_hold: 480  # 8 hours in minutes
   take_profit_decay: 2880  # 48 hours in minutes
@@ -27,10 +27,54 @@ parameters:
   stop_loss_decay: 2880  # 48 hours in minutes
   trailing_stop_pct: 0.005  # 0.5%
 
+  # ML model parameters
+  ml_model_type: "xgboost"  # Options: "logistic_regression", "decision_tree"
+  ml_confidence_threshold: 0.6
+  ml_features:
+    - "adx"
+    - "rsi"
+    - "macd"
+    - "bbands"
+    - "atr"
+    - "ou_theta"
+    - "ou_mu"
+    - "ou_sigma"
+    - "adf_pvalue"
+    - "distance"
+    - "returns"
+
+  # Regime switching parameters
+  trend_adx_threshold: 50  # ADX threshold for trend following
+  extreme_deviation_multiplier: 2.0  # Multiple of std_dev_threshold for extreme deviations
+  adx_daily_threshold: 70  # ADX daily threshold for mean reversion
+  adx_hourly_threshold: 80  # ADX hourly threshold for mean reversion
+
+  # Statistical parameters
+  adf_pvalue_threshold: 0.05  # P-value threshold for stationarity test
+  grid_level_threshold: 0.5  # Threshold for creating a new grid level
+  min_training_samples: 30  # Minimum number of samples required for ML training
+
+  # Indicator parameters
+  adx_length: 14  # Length parameter for ADX indicator
+  rsi_length: 14  # Length parameter for RSI indicator
+  macd_fast: 12  # Fast period for MACD indicator
+  macd_slow: 26  # Slow period for MACD indicator
+  macd_signal: 9  # Signal period for MACD indicator
+  bbands_length: 20  # Length parameter for Bollinger Bands indicator
+  bbands_std: 2  # Standard deviation parameter for Bollinger Bands indicator
+  atr_length: 14  # Length parameter for ATR indicator
+
+  # ML training parameters
+  ml_training_lookback: 24  # Number of bars to look ahead for ML training labels
+  recent_returns_lookback: 5  # Number of recent returns to average for ML features
+
+  # Logging parameters
+  log_interval: 10  # Log indicator status every N bars
+
+# Data configuration for backtesting
 data:
-  # Data requirements
   instruments:
     - id: BTCUSDT.BINANCE
       bar_types:
-        - 1-HOUR
-        - 1-DAY
+        - BTCUSDT.BINANCE-1-HOUR-LAST-EXTERNAL
+        - BTCUSDT.BINANCE-1-DAY-LAST-EXTERNAL

@@ -36,6 +36,14 @@ except ImportError:
         "scikit-learn is not installed. Please install it with: pip install scikit-learn"
     )
 
+# Import XGBoost
+try:
+    import xgboost as xgb
+except ImportError:
+    raise ImportError(
+        "xgboost is not installed. Please install it with: pip install xgboost"
+    )
+
 
 class BaseModel(ABC):
     """
@@ -322,4 +330,112 @@ class DecisionTreeModel(BaseModel):
         probabilities = self.model.predict_proba(X_scaled)[0]
         confidence = probabilities[prediction]
         
+class XGBoostModel(BaseModel):
+    """
+    XGBoost model for trend prediction.
+    """
+
+    def __init__(
+        self,
+        confidence_threshold: float = 0.6,
+        n_estimators: int = 100,
+        learning_rate: float = 0.1,
+        max_depth: int = 3,
+        use_label_encoder: bool = False, # Suppress warning
+        eval_metric: str = "logloss", # Suppress warning
+        random_state: int = 42,
+    ):
+        """
+        Initialize the XGBoost model.
+
+        Parameters
+        ----------
+        confidence_threshold : float
+            The confidence threshold for predictions (default: 0.6).
+        n_estimators : int
+            Number of boosting rounds (default: 100).
+        learning_rate : float
+            Boosting learning rate (default: 0.1).
+        max_depth : int
+            Maximum tree depth for base learners (default: 3).
+        random_state : int
+            Random state for reproducibility (default: 42).
+        """
+        super().__init__(confidence_threshold)
+        self.model = xgb.XGBClassifier(
+            n_estimators=n_estimators,
+            learning_rate=learning_rate,
+            max_depth=max_depth,
+            use_label_encoder=use_label_encoder,
+            eval_metric=eval_metric,
+            random_state=random_state,
+        )
+
+    def train(self, features: np.ndarray, labels: np.ndarray) -> Dict[str, float]:
+        """
+        Train the XGBoost model.
+
+        Parameters
+        ----------
+        features : np.ndarray
+            The feature matrix.
+        labels : np.ndarray
+            The target labels.
+
+        Returns
+        -------
+        Dict[str, float]
+            Dictionary with training metrics.
+        """
+        # Scale features
+        X_scaled = self.scaler.fit_transform(features)
+
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_scaled, labels, test_size=0.2, random_state=42
+        )
+
+        # Train model
+        self.model.fit(X_train, y_train)
+        self.is_trained = True
+
+        # Evaluate model
+        y_pred = self.model.predict(X_test)
+
+        # Calculate metrics
+        metrics = {
+            "accuracy": accuracy_score(y_test, y_pred),
+            "precision": precision_score(y_test, y_pred, zero_division=0),
+            "recall": recall_score(y_test, y_pred, zero_division=0),
+            "f1": f1_score(y_test, y_pred, zero_division=0),
+        }
+
+        return metrics
+
+    def predict(self, features: np.ndarray) -> Tuple[int, float]:
+        """
+        Make a prediction with the XGBoost model.
+
+        Parameters
+        ----------
+        features : np.ndarray
+            The feature vector.
+
+        Returns
+        -------
+        Tuple[int, float]
+            The predicted class and confidence.
+        """
+        if not self.is_trained:
+            raise ValueError("Model is not trained yet")
+
+        # Preprocess features
+        X_scaled = self.preprocess_features(features)
+
+        # Get prediction and probability
+        prediction = self.model.predict(X_scaled)[0]
+        probabilities = self.model.predict_proba(X_scaled)[0]
+        confidence = probabilities[prediction]
+
+        return prediction, confidence
         return prediction, confidence
