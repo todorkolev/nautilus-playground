@@ -160,7 +160,11 @@ class Position:
         """
         if self._initial_order_id is not None:
             # Cancel any existing entry order
-            self.strategy.cancel_order(self._initial_order_id)
+            # Get the order object from the cache first
+            order = self.strategy.cache.order(self._initial_order_id)
+            if order is not None:
+                self.strategy.cancel_order(order)
+            self._initial_order_id = None
 
         # Create a market order
         order_side = OrderSide.BUY if self.side == Side.LONG else OrderSide.SELL
@@ -179,12 +183,13 @@ class Position:
         self._opened = True
         # We'll get the actual entry price from the order fill event
         self._entry_time = self._current_time
+        # Set filled quantity for now (will be updated in handle_order_event)
+        self._filled_quantity = self.quantity
 
         self.strategy._log.info(f"Market order placed. Waiting for fill.")
 
-        # Place take profit and stop loss orders
-        self._place_take_profit_order()
-        self._place_stop_loss_order()
+        # Wait for the order to be filled before placing take profit and stop loss orders
+        # The handle_order_event method will place these orders when the order is filled
 
     def market_close(self) -> None:
         """
@@ -221,11 +226,15 @@ class Position:
         if self._entry_price is not None:
             # Create a limit order
             order_side = OrderSide.BUY if self.side == Side.LONG else OrderSide.SELL
+
+            # Round the price to the instrument's price precision
+            rounded_price = round(self._entry_price, self.instrument.price_precision)
+
             order = self.strategy.order_factory.limit(
                 instrument_id=self.instrument_id,
                 order_side=order_side,
                 quantity=self.instrument.make_qty(self.quantity),
-                price=Price.from_str(str(self._entry_price)),
+                price=Price.from_str(str(rounded_price)),
                 time_in_force=TimeInForce.GTC,
             )
 
@@ -234,7 +243,7 @@ class Position:
             self._initial_order_id = order.client_order_id
 
             self.strategy._log.info(
-                f"Placed initial limit order for {self.quantity} units at {self._entry_price} "
+                f"Placed initial limit order for {self.quantity} units at {rounded_price} "
                 f"with ID {self._initial_order_id}"
             )
 

@@ -46,7 +46,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Default symbols and timeframes to download
-DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
+DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 DEFAULT_TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"]
 DEFAULT_DAYS = 30
 
