@@ -33,13 +33,20 @@ VS Code will build the container and open the project inside it. This may take a
 - `data/`: Data files for backtesting
   - `catalog/`: Local data catalog for reproducible backtests
 - `docs/`: Project documentation
+  - `indicators/`: Documentation for technical indicators
   - `nautilus/`: Documentation for the Nautilus Trader library (auto-generated)
+  - `strategies/`: Documentation for trading strategies
+- `examples/`: Example code and configurations
+- `notebooks/`: Jupyter notebooks for strategy exploration and backtesting
 - `scripts/`: Utility scripts
 - `src/`: Source code
   - `execution/`: Execution algorithms
   - `indicators/`: Technical indicators
   - `strategies/`: Trading strategies
-  - `notebooks/`: Jupyter notebooks
+    - `mean_reversion/`: Mean reversion strategy implementation
+    - `moving_average_crossover/`: Moving average crossover strategy implementation
+- `tests/`: Unit and integration tests
+  - `strategies/`: Tests for trading strategies
 
 ## Documentation
 
@@ -53,6 +60,7 @@ Detailed documentation is available in the `docs/` directory:
 - [Indicators](docs/indicators.md): Documentation for technical indicators
 - [Notebooks](docs/notebooks.md): Documentation for Jupyter notebooks
 - [Strategies](docs/strategies.md): Documentation for trading strategies
+  - [Mean Reversion Strategy](docs/strategies/mean_reversion.md): Documentation for the mean reversion strategy
 - [Live Trading](docs/live_trading.md): Guide for setting up and running live trading with Binance
 
 ## Running Examples

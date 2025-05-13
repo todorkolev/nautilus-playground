@@ -4,12 +4,23 @@ This document describes the technical indicators available in the Nautilus Playg
 
 ## Available Indicators
 
-- `adaptive_moving_average.py`: Adaptive Moving Average (AMA) indicator
-- `relative_strength_index.py`: Relative Strength Index (RSI) indicator
+- `pandas_ta_indicator.py`: A wrapper for the pandas-ta library that provides access to numerous technical indicators
 
-## Adaptive Moving Average (AMA)
+## PandasTaIndicator
 
-The AMA adjusts its smoothing factor based on market volatility, making it more responsive to price changes in trending markets and less responsive in ranging markets.
+The PandasTaIndicator is a wrapper for the [pandas-ta](https://github.com/twopirllc/pandas-ta) library that allows using any indicator from the library in Nautilus Trader. This provides access to over 130 technical indicators without having to implement them individually.
+
+### Supported Indicators
+
+The PandasTaIndicator supports all indicators available in pandas-ta, including:
+
+- **Trend Indicators**: ADX, MACD, Moving Averages (SMA, EMA, WMA, etc.)
+- **Momentum Indicators**: RSI, Stochastic, CCI, ROC
+- **Volatility Indicators**: Bollinger Bands, ATR, Keltner Channels
+- **Volume Indicators**: OBV, Volume Profile, MFI
+- **And many more**
+
+For a complete list of supported indicators, see the [pandas-ta documentation](https://github.com/twopirllc/pandas-ta).
 
 ### Usage
 
@@ -17,7 +28,7 @@ The AMA adjusts its smoothing factor based on market volatility, making it more 
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import PriceType
 from nautilus_trader.model.identifiers import InstrumentId
-from src.indicators.adaptive_moving_average import AdaptiveMovingAverage
+from src.indicators.pandas_ta_indicator import PandasTaIndicator
 
 # Create the bar type
 bar_type = BarType(
@@ -27,54 +38,49 @@ bar_type = BarType(
     price_type=PriceType.LAST,
 )
 
-# Create the indicator
-ama = AdaptiveMovingAverage(
+# Create an RSI indicator
+rsi = PandasTaIndicator(
     bar_type=bar_type,
-    period=14,
-    fast_period=2,
-    slow_period=30,
+    indicator_name="rsi",
+    params={"length": 14},
     price_type=PriceType.LAST,
 )
 
-# In a strategy, register the indicator
-self.register_indicator(ama)
-
-# Access the indicator value
-value = ama.value
-```
-
-## Relative Strength Index (RSI)
-
-The RSI is a momentum oscillator that measures the speed and change of price movements. It oscillates between 0 and 100 and is typically used to identify overbought or oversold conditions.
-
-### Usage
-
-```python
-from nautilus_trader.model.data import BarType
-from nautilus_trader.model.enums import PriceType
-from nautilus_trader.model.identifiers import InstrumentId
-from src.indicators.relative_strength_index import RelativeStrengthIndex
-
-# Create the bar type
-bar_type = BarType(
-    instrument_id=InstrumentId("BTCUSDT.BINANCE"),
-    bar_spec=1,
-    aggregation=BarAggregation.HOUR,
-    price_type=PriceType.LAST,
-)
-
-# Create the indicator
-rsi = RelativeStrengthIndex(
+# Create an ADX indicator
+adx = PandasTaIndicator(
     bar_type=bar_type,
-    period=14,
+    indicator_name="adx",
+    params={"length": 14},
     price_type=PriceType.LAST,
 )
 
-# In a strategy, register the indicator
-self.register_indicator(rsi)
+# Create a MACD indicator
+macd = PandasTaIndicator(
+    bar_type=bar_type,
+    indicator_name="macd",
+    params={"fast": 12, "slow": 26, "signal": 9},
+    price_type=PriceType.LAST,
+)
 
-# Access the indicator value
-value = rsi.value
+# Create a Bollinger Bands indicator
+bbands = PandasTaIndicator(
+    bar_type=bar_type,
+    indicator_name="bbands",
+    params={"length": 20, "std": 2},
+    price_type=PriceType.LAST,
+)
+
+# In a strategy, register the indicators
+self.register_indicator_for_bars(bar_type, rsi)
+self.register_indicator_for_bars(bar_type, adx)
+self.register_indicator_for_bars(bar_type, macd)
+self.register_indicator_for_bars(bar_type, bbands)
+
+# Access the indicator values
+rsi_value = rsi.value
+adx_value = adx.value
+macd_value = macd.value  # Returns a dictionary with 'MACD', 'MACD_signal', and 'MACD_hist'
+bbands_value = bbands.value  # Returns a dictionary with 'BBL', 'BBM', and 'BBU'
 ```
 
 ## Creating New Indicators
@@ -100,18 +106,18 @@ class MyIndicator(Indicator):
         self.period = period
         self.price_type = price_type
         # Initialize your indicator
-        
+
     def handle_bar(self, bar):
         # Update the indicator with the given bar
-        
+
     @property
     def value(self):
         # Return the current indicator value
-        
+
     @property
     def has_inputs(self):
         # Return whether the indicator has inputs
-        
+
     def reset(self):
         # Reset the indicator
 ```

@@ -10,8 +10,11 @@ Welcome to the Nautilus Playground documentation. This documentation provides de
 - [Source Code](source_code.md): Overview of the source code structure
 - [Execution Algorithms](execution_algorithms.md): Documentation for execution algorithms
 - [Indicators](indicators.md): Documentation for technical indicators
+  - [ADX Indicator](indicators/adx.md): Documentation for the Average Directional Index indicator
 - [Notebooks](notebooks.md): Documentation for Jupyter notebooks
 - [Strategies](strategies.md): Documentation for trading strategies
+  - [Mean Reversion Strategy](strategies/mean_reversion.md): Documentation for the mean reversion strategy
+- [Live Trading](live_trading.md): Guide for setting up and running live trading with Binance
 
 ## Nautilus Trader Documentation
 

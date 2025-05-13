@@ -5,6 +5,7 @@ This document describes the Jupyter notebooks available in the Nautilus Playgrou
 ## Available Notebooks
 
 - `moving_average_crossover_backtest.ipynb`: Demonstrates backtesting and optimizing a Moving Average Crossover strategy
+- `mean_reversion_strategy_exploration.ipynb`: Explores and demonstrates the Mean Reversion strategy with ADX filtering
 
 ## Running Notebooks
 
@@ -37,6 +38,17 @@ This notebook demonstrates:
 2. Configuring and running a backtest with the Moving Average Crossover strategy
 3. Analyzing the results
 4. Optimizing strategy parameters
+
+### Mean Reversion Strategy Exploration
+
+This notebook demonstrates:
+
+1. Loading and analyzing price data for mean reversion characteristics
+2. Testing for stationarity using the Augmented Dickey-Fuller test
+3. Estimating Ornstein-Uhlenbeck process parameters
+4. Visualizing mean reversion opportunities
+5. Backtesting the Mean Reversion strategy with ADX filtering
+6. Analyzing performance metrics and trade distributions
 
 ## Creating New Notebooks
 
