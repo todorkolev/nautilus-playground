@@ -1,9 +1,8 @@
 {
     "name": "Nautilus Trader Playground",
-    "build": {
-        "dockerfile": "../Dockerfile",
-        "context": ".."
-    },
+    "dockerComposeFile": "../docker-compose.yml",
+    "service": "nautilus-dev",
+    "workspaceFolder": "/workspaces/nautilus-playground",
     "customizations": {
         "vscode": {
             "settings": {
@@ -29,7 +28,7 @@
                 // AI
                 "augment.vscode-augment",
                 "rooveterinaryinc.roo-cline",
-                "github.copilot",
+                "github.copilot"
             ]
         }
     },

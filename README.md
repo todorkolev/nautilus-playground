@@ -21,11 +21,39 @@ Nautilus Playground is designed to help you:
 
 ### Installation
 
+#### Option 1: Using VS Code Dev Containers
+
 1. Clone this repository
 2. Open the project in VS Code
 3. When prompted, click "Reopen in Container" or run the "Remote-Containers: Reopen in Container" command from the command palette
 
 VS Code will build the container and open the project inside it. This may take a few minutes the first time.
+
+#### Option 2: Using Docker Compose Directly
+
+If you prefer not to use VS Code or want to run the environment outside of an IDE:
+
+1. Clone this repository
+2. Navigate to the project directory
+3. Build and start the container:
+
+```bash
+docker compose up -d
+```
+
+4. Access JupyterLab in your browser at: http://localhost:8888/lab
+
+5. To execute commands in the container:
+
+```bash
+docker compose exec nautilus-dev bash
+```
+
+6. To stop the container:
+
+```bash
+docker compose down
+```
 
 ## Project Structure
 
@@ -70,13 +98,13 @@ Detailed documentation is available in the `docs/` directory:
 To run a backtest:
 
 ```bash
-python src/main_backtest.py --config path/to/config.yaml
+python src/main_backtest.py --strategy src/strategies/my_strategy/config.yaml
 ```
 
 You can also specify start and end dates:
 
 ```bash
-python src/main_backtest.py --config path/to/config.yaml --start-date 2023-01-01 --end-date 2023-12-31
+python src/main_backtest.py --strategy src/strategies/my_strategy/config.yaml --start-date 2023-01-01 --end-date 2023-12-31
 ```
 
 ### Mean Reversion Strategy
@@ -114,7 +142,7 @@ python src/main_live.py --paper
 To use a custom configuration file (if needed):
 
 ```bash
-python src/main_live.py --config path/to/config.yaml
+python src/main_live.py --strategy src/strategies/my_strategy/config.yaml
 ```
 
 See the [Live Trading Guide](docs/live_trading.md) for detailed setup instructions.

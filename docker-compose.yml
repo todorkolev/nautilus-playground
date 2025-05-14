@@ -1,17 +1,18 @@
 version: '3.8'
 
 services:
-  app:
+  nautilus-dev:
     build:
       context: .
       dockerfile: Dockerfile
     volumes:
-      - .:/workspace
+      # Main workspace
+      - .:/workspaces/nautilus-playground
+      # Add additional volumes as needed
+      # - ~/work/perper-ray:/workspaces/perper-ray
     ports:
       - "8888:8888"  # JupyterLab
     environment:
-      - PYTHONPATH=/workspace
-    user: user
-    working_dir: /workspace
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     tty: true
     stdin_open: true
