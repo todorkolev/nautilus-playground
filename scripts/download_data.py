@@ -334,13 +334,17 @@ def download_historical_data(
         try:
             # Ensure volume has exactly 6 decimal places precision
             volume_str = f"{float(row['volume']):.6f}"
+            open_price = f"{float(row['open']):.2f}"
+            high_price = f"{float(row['high']):.2f}"
+            low_price = f"{float(row['low']):.2f}"
+            close_price = f"{float(row['close']):.2f}"
 
             bar = Bar(
                 bar_type=bar_type,
-                open=Price.from_str(str(row["open"])),
-                high=Price.from_str(str(row["high"])),
-                low=Price.from_str(str(row["low"])),
-                close=Price.from_str(str(row["close"])),
+                open=Price.from_str(open_price),
+                high=Price.from_str(high_price),
+                low=Price.from_str(low_price),
+                close=Price.from_str(close_price),
                 volume=Quantity.from_str(volume_str),
                 ts_event=ts_event,
                 ts_init=ts_event,  # Use same timestamp for simplicity

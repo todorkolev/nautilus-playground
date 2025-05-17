@@ -373,6 +373,8 @@ class MeanReversionStrategy(Strategy):
         self.ml_training_data = {
             "features": [],
             "labels": [],
+            "pending_features": [],  # Store features waiting for future data
+            "timestamps": [],        # Store timestamps for pending features
         }
 
         # Register indicators for bars
@@ -425,6 +427,9 @@ class MeanReversionStrategy(Strategy):
             if len(self.hour_bars) > self.lookback:
                 self.hour_bars = self.hour_bars[-self.lookback:]
 
+            # Process any pending ML features that now have enough future data
+            self.process_pending_features()
+
             # Log indicator status periodically
             if len(self.hour_bars) % self.log_interval == 0:
                 self._log.info(f"ADX Hourly initialized: {self.adx_hourly.initialized}, value: {self.adx_hourly.value}")
@@ -475,7 +480,8 @@ class MeanReversionStrategy(Strategy):
         self._log.info(f"Current price: {current_price}")
 
         # Check for mean reversion conditions
-        if self.adx_daily.value < self.adx_daily_threshold and self.adx_hourly.value < self.adx_hourly_threshold:
+        if (self.adx_daily.value is not None and self.adx_hourly.value is not None and
+            self.adx_daily.value < self.adx_daily_threshold and self.adx_hourly.value < self.adx_hourly_threshold):
             self._log.info(f"ADX PASS - Daily: {self.adx_daily.value:.2f}, Hourly: {self.adx_hourly.value:.2f}")
 
             # Check for stationarity
@@ -511,8 +517,13 @@ class MeanReversionStrategy(Strategy):
                     features = self.extract_ml_features(adf_pvalue, distance, returns)
 
                     # Train ML model if not trained
-                    if not self.ml_model_trained and len(self.ml_training_data["features"]) > self.min_training_samples:
-                        self.train_ml_model()
+                    if not self.ml_model_trained:
+                        # Process pending features to see if we have enough data
+                        self.process_pending_features()
+                        total_samples = len(self.ml_training_data["features"])
+                        if total_samples >= self.min_training_samples:
+                            self._log.info(f"Attempting to train ML model with {total_samples} samples")
+                            self.train_ml_model()
 
                     # If model is trained, make prediction
                     if self.ml_model_trained:
@@ -538,7 +549,7 @@ class MeanReversionStrategy(Strategy):
                 self._log.info("Price series is not stationary")
 
         # Check for trend following conditions
-        elif self.adx_hourly.value > self.trend_adx_threshold:
+        elif self.adx_hourly.value is not None and self.adx_hourly.value > self.trend_adx_threshold:
             self._log.info(f"Strong trend detected: ADX Hourly: {self.adx_hourly.value:.2f}")
 
             # Calculate distance from mean if OU parameters are available
@@ -658,50 +669,93 @@ class MeanReversionStrategy(Strategy):
             Whether the price series is stationary. Currently not used but kept for future enhancements.
         """
         # Note: is_stationary parameter is not currently used but kept for future enhancements
+
         # Check if we already have the maximum number of positions for this side
         if len(self.positions[side]) >= self.positions_per_side:
             self._log.info(f"Maximum number of {side.value} positions reached")
             return
 
+        # Check if we have any active orders for this side that are still pending
+        active_orders_count = 0
+        for position in self.positions[side]:
+            if position._initial_order_id is not None and not position._opened:
+                order = self.cache.order(position._initial_order_id)
+                if order is not None and order.is_active:
+                    active_orders_count += 1
+
+        if active_orders_count > 0:
+            self._log.info(f"Already have {active_orders_count} pending orders for {side.value}, skipping new grid level")
+            return
+
         # Check if we need to create a new grid level
         last_price = self.last_grid_prices[side]
-        if last_price is None or abs(current_price - last_price) / self.grid_std_dev > self.grid_level_threshold:
-            self._log.info(f"Creating new grid level for {side.value} at {current_price:.2f}")
 
-            # Calculate take profit and stop loss prices
-            take_profit_price = None
-            stop_loss_price = None
+        # Increase the grid level threshold to reduce the number of grid levels
+        effective_threshold = self.grid_level_threshold * 1.5
 
-            if side == Side.LONG:
-                take_profit_price = current_price + self.take_profit_std_dev_multiplier * self.grid_std_dev
-                stop_loss_price = current_price - self.stop_loss_std_dev_multiplier * self.grid_std_dev
-            else:  # Side.SHORT
-                take_profit_price = current_price - self.take_profit_std_dev_multiplier * self.grid_std_dev
-                stop_loss_price = current_price + self.stop_loss_std_dev_multiplier * self.grid_std_dev
+        # Check if price has moved enough from the last grid level and grid_std_dev is available
+        if self.grid_std_dev is not None and (last_price is None or abs(current_price - last_price) / self.grid_std_dev > effective_threshold):
+            # Check if there are any existing positions that are too close to the current price
+            min_distance_std_dev = effective_threshold * 0.75
+            too_close = False
 
-            # Create a new position
-            position = ShrinkingRangePosition(
-                strategy=self,
-                instrument_id=self.instrument_id,
-                side=side,
-                quantity=self.trade_size,
-                entry_price=current_price,
-                take_profit_price=take_profit_price,
-                stop_loss_price=stop_loss_price,
-                take_profit_hold=self.take_profit_hold,
-                take_profit_decay=self.take_profit_decay,
-                stop_loss_hold=self.stop_loss_hold,
-                stop_loss_decay=self.stop_loss_decay,
-            )
+            # Only check distance if grid_std_dev is available
+            if self.grid_std_dev is not None:
+                for position in self.positions[side]:
+                    if position._entry_price is not None:
+                        position_distance = abs(current_price - position._entry_price) / self.grid_std_dev
+                        if position_distance < min_distance_std_dev:
+                            too_close = True
+                            self._log.info(f"Skipping new grid level - too close to existing position at {position._entry_price:.2f}")
+                            break
 
-            # Open the position
-            position.market_open()
+            if not too_close:
+                self._log.info(f"Creating new grid level for {side.value} at {current_price:.2f}")
 
-            # Add to positions list
-            self.positions[side].append(position)
+                # Calculate take profit and stop loss prices
+                take_profit_price = None
+                stop_loss_price = None
 
-            # Update last grid price
-            self.last_grid_prices[side] = current_price
+                # Only calculate take profit and stop loss if grid_std_dev is available
+                if self.grid_std_dev is not None:
+                    if side == Side.LONG:
+                        take_profit_price = current_price + self.take_profit_std_dev_multiplier * self.grid_std_dev
+                        stop_loss_price = current_price - self.stop_loss_std_dev_multiplier * self.grid_std_dev
+                    else:  # Side.SHORT
+                        take_profit_price = current_price - self.take_profit_std_dev_multiplier * self.grid_std_dev
+                        stop_loss_price = current_price + self.stop_loss_std_dev_multiplier * self.grid_std_dev
+                else:
+                    # Use percentage-based take profit and stop loss if grid_std_dev is not available
+                    if side == Side.LONG:
+                        take_profit_price = current_price * (1 + 0.02)  # 2% take profit
+                        stop_loss_price = current_price * (1 - 0.01)    # 1% stop loss
+                    else:  # Side.SHORT
+                        take_profit_price = current_price * (1 - 0.02)  # 2% take profit
+                        stop_loss_price = current_price * (1 + 0.01)    # 1% stop loss
+
+                # Create a new position
+                position = ShrinkingRangePosition(
+                    strategy=self,
+                    instrument_id=self.instrument_id,
+                    side=side,
+                    quantity=self.trade_size,
+                    entry_price=current_price,
+                    take_profit_price=take_profit_price,
+                    stop_loss_price=stop_loss_price,
+                    take_profit_hold=self.take_profit_hold,
+                    take_profit_decay=self.take_profit_decay,
+                    stop_loss_hold=self.stop_loss_hold,
+                    stop_loss_decay=self.stop_loss_decay,
+                )
+
+                # Open the position
+                position.market_open()
+
+                # Add to positions list
+                self.positions[side].append(position)
+
+                # Update last grid price
+                self.last_grid_prices[side] = current_price
 
     def manage_trend_position(self, side: Side, current_price: float) -> None:
         """
@@ -721,7 +775,8 @@ class MeanReversionStrategy(Strategy):
         self.positions[opposite_side] = []
 
         # Check if we already have a trend position for this side
-        if any(position._position_type == "trend" for position in self.positions[side]):
+        # Use isinstance to check if it's a TrailingStopPosition
+        if any(isinstance(position, TrailingStopPosition) for position in self.positions[side]):
             self._log.info(f"Trend position for {side.value} already exists")
             return
 
@@ -823,31 +878,73 @@ class MeanReversionStrategy(Strategy):
             The feature vector.
         distance : float
             The distance from the mean in standard deviations.
+            Note: This parameter is not directly used but is documented for clarity.
         """
-        # Store features
-        self.ml_training_data["features"].append(features)
+        # Store current features with timestamp (index in hour_bars)
+        if len(self.hour_bars) > 0:
+            current_idx = len(self.hour_bars) - 1
+            self.ml_training_data["pending_features"].append(features)
+            self.ml_training_data["timestamps"].append(current_idx)
 
-        # Create label based on whether the price continues to move away from the mean
-        # 1 = trend continuation, 0 = mean reversion
-        # For simplicity, we'll use the sign of the distance to determine the direction
-        # and check if the next bars continue in that direction
-        if len(self.hour_bars) >= self.ml_training_lookback:
-            current_price = self.hour_bars[-1].close.as_double()
-            future_price = self.hour_bars[-self.ml_training_lookback].close.as_double()
-            price_change = future_price - current_price
+            # Process any pending features that now have enough future data
+            self.process_pending_features()
 
-            # If distance is positive and price increases, or distance is negative and price decreases,
-            # then the trend continues
-            trend_continues = (distance > 0 and price_change > 0) or (distance < 0 and price_change < 0)
+    def process_pending_features(self) -> None:
+        """
+        Process pending features that now have enough future data to create labels.
+        This ensures proper alignment between features and labels.
+        """
+        if not self.ml_training_data["pending_features"]:
+            return
 
-            self.ml_training_data["labels"].append(1 if trend_continues else 0)
+        current_idx = len(self.hour_bars) - 1
+        features_to_remove = []
+
+        # Process each pending feature
+        for i, (features, timestamp_idx) in enumerate(zip(
+            self.ml_training_data["pending_features"],
+            self.ml_training_data["timestamps"]
+        )):
+            # Check if we have enough future data (ml_training_lookback bars after this feature was recorded)
+            if current_idx - timestamp_idx >= self.ml_training_lookback:
+                # We have enough future data to create a label
+                if timestamp_idx >= 0 and current_idx < len(self.hour_bars):
+                    historical_price = self.hour_bars[timestamp_idx].close.as_double()
+                    future_price = self.hour_bars[current_idx].close.as_double()
+                    price_change = future_price - historical_price
+
+                    # Calculate historical distance for that point
+                    if self.grid_mean is not None and self.grid_std_dev is not None:
+                        historical_distance = (historical_price - self.grid_mean) / self.grid_std_dev
+                        # If distance is positive and price increases, or distance is negative and price decreases,
+                        # then the trend continues
+                        trend_continues = (historical_distance > 0 and price_change > 0) or (historical_distance < 0 and price_change < 0)
+
+                        # Add aligned feature and label
+                        self.ml_training_data["features"].append(features)
+                        self.ml_training_data["labels"].append(1 if trend_continues else 0)
+
+                        # Mark this feature for removal from pending list
+                        features_to_remove.append(i)
+
+                        self._log.info(f"Added ML training sample: historical_idx={timestamp_idx}, "
+                                      f"future_idx={current_idx}, label={1 if trend_continues else 0}")
+
+        # Remove processed features (in reverse order to maintain correct indices)
+        for i in sorted(features_to_remove, reverse=True):
+            self.ml_training_data["pending_features"].pop(i)
+            self.ml_training_data["timestamps"].pop(i)
 
     def train_ml_model(self) -> None:
         """
         Train the ML model with collected data.
         """
+        # Process any pending features first to ensure we have the most up-to-date data
+        self.process_pending_features()
+
         if len(self.ml_training_data["features"]) < self.min_training_samples or len(self.ml_training_data["labels"]) < self.min_training_samples:
-            self._log.info("Not enough training data yet")
+            self._log.info(f"Not enough training data yet. Features: {len(self.ml_training_data['features'])}, Labels: {len(self.ml_training_data['labels'])}")
+            self._log.info(f"Pending features: {len(self.ml_training_data['pending_features'])}")
             return
 
         features = np.array(self.ml_training_data["features"])
@@ -884,6 +981,10 @@ class MeanReversionStrategy(Strategy):
 
                     self._log.info(f"Position opened: {side.value} at {position._entry_price:.2f}")
 
-                    # Update take profit and stop loss orders
-                    position._update_take_profit(position._take_profit_price)
-                    position._update_stop_loss(position._stop_loss_price)
+                    # For ShrinkingRangePosition and TrailingStopPosition, we need to place the TP/SL orders
+                    # after the position is opened. We'll use a safer approach by checking the instance type.
+                    if isinstance(position, ShrinkingRangePosition) or isinstance(position, TrailingStopPosition):
+                        # These position types will automatically place TP/SL orders in their next update
+                        # Force an update with the current bar
+                        if len(self.hour_bars) > 0:
+                            position.update(self.hour_bars[-1])

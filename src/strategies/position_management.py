@@ -24,7 +24,7 @@ from decimal import Decimal
 from typing import Optional, Dict, Any, List
 
 from nautilus_trader.model.data import Bar
-from nautilus_trader.model.enums import OrderSide, TimeInForce
+from nautilus_trader.model.enums import OrderSide, OrderStatus, TimeInForce
 from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import ClientOrderId as OrderId
@@ -227,14 +227,14 @@ class Position:
             # Create a limit order
             order_side = OrderSide.BUY if self.side == Side.LONG else OrderSide.SELL
 
-            # Round the price to the instrument's price precision
-            rounded_price = round(self._entry_price, self.instrument.price_precision)
+            # Use instrument's make_price method to ensure correct price precision
+            price = self.instrument.make_price(self._entry_price)
 
             order = self.strategy.order_factory.limit(
                 instrument_id=self.instrument_id,
                 order_side=order_side,
                 quantity=self.instrument.make_qty(self.quantity),
-                price=Price.from_str(str(rounded_price)),
+                price=price,
                 time_in_force=TimeInForce.GTC,
             )
 
@@ -243,7 +243,7 @@ class Position:
             self._initial_order_id = order.client_order_id
 
             self.strategy._log.info(
-                f"Placed initial limit order for {self.quantity} units at {rounded_price} "
+                f"Placed initial limit order for {self.quantity} units at {price} "
                 f"with ID {self._initial_order_id}"
             )
 
@@ -255,14 +255,14 @@ class Position:
             # Create a limit order for take profit
             order_side = OrderSide.SELL if self.side == Side.LONG else OrderSide.BUY
 
-            # Round the price to the instrument's price precision
-            rounded_price = round(self._take_profit_price, self.instrument.price_precision)
+            # Use instrument's make_price method to ensure correct price precision
+            price = self.instrument.make_price(self._take_profit_price)
 
             order = self.strategy.order_factory.limit(
                 instrument_id=self.instrument_id,
                 order_side=order_side,
                 quantity=self.instrument.make_qty(self._filled_quantity),
-                price=Price.from_str(str(rounded_price)),
+                price=price,
                 time_in_force=TimeInForce.GTC,
             )
 
@@ -271,7 +271,7 @@ class Position:
             self._take_profit_order_id = order.client_order_id
 
             self.strategy._log.info(
-                f"Placed take profit order at {self._take_profit_price} with ID {self._take_profit_order_id}"
+                f"Placed take profit order at {price} with ID {self._take_profit_order_id}"
             )
 
     def _place_stop_loss_order(self) -> None:
@@ -282,14 +282,14 @@ class Position:
             # Create a stop market order for stop loss
             order_side = OrderSide.SELL if self.side == Side.LONG else OrderSide.BUY
 
-            # Round the price to the instrument's price precision
-            rounded_price = round(self._stop_loss_price, self.instrument.price_precision)
+            # Use instrument's make_price method to ensure correct price precision
+            trigger_price = self.instrument.make_price(self._stop_loss_price)
 
             order = self.strategy.order_factory.stop_market(
                 instrument_id=self.instrument_id,
                 order_side=order_side,
                 quantity=self.instrument.make_qty(self._filled_quantity),
-                trigger_price=Price.from_str(str(rounded_price)),  # Use trigger_price instead of price
+                trigger_price=trigger_price,  # Use trigger_price instead of price
                 time_in_force=TimeInForce.GTC,
             )
 
@@ -298,7 +298,7 @@ class Position:
             self._stop_loss_order_id = order.client_order_id
 
             self.strategy._log.info(
-                f"Placed stop loss order at {self._stop_loss_price} with ID {self._stop_loss_order_id}"
+                f"Placed stop loss order at {trigger_price} with ID {self._stop_loss_order_id}"
             )
 
     def _cancel_remaining_orders(self) -> None:
@@ -460,12 +460,15 @@ class TrailingStopPosition(Position):
             current_price = bar.close.as_double()
             new_stop_loss_price = current_price * (1 - self.side_multiplier * self.stop_loss_percentage)
 
-            # Update stop loss if it's more favorable
+            # Update stop loss if it's more favorable (and not too frequent)
+            # Only update if the price has moved significantly to reduce order churn
+            min_price_move = self.instrument.price_increment.as_double() * 5  # Require at least 5 ticks movement
+
             if self.side == Side.LONG:
-                if self._stop_loss_price is None or new_stop_loss_price > self._stop_loss_price:
+                if self._stop_loss_price is None or (new_stop_loss_price > self._stop_loss_price + min_price_move):
                     self._update_stop_loss(new_stop_loss_price)
             else:  # Side.SHORT
-                if self._stop_loss_price is None or new_stop_loss_price < self._stop_loss_price:
+                if self._stop_loss_price is None or (new_stop_loss_price < self._stop_loss_price - min_price_move):
                     self._update_stop_loss(new_stop_loss_price)
 
     def _update_stop_loss(self, new_price: float) -> None:
@@ -482,9 +485,17 @@ class TrailingStopPosition(Position):
 
         self._stop_loss_price = new_price
 
-        # Cancel existing stop loss order
+        # Cancel existing stop loss order if it exists and can be canceled
         if self._stop_loss_order_id is not None:
-            self.strategy.cancel_order(self._stop_loss_order_id)
+            # Get the order object from the cache
+            order = self.strategy.cache.order(self._stop_loss_order_id)
+            if order is not None:
+                try:
+                    # Check if order is in a state that can be canceled
+                    if order.status not in [OrderStatus.CANCELED, OrderStatus.FILLED, OrderStatus.REJECTED]:
+                        self.strategy.cancel_order(order)
+                except Exception as e:
+                    self.strategy._log.warning(f"Failed to cancel stop loss order: {e}")
             self._stop_loss_order_id = None
 
         # Place new stop loss order
@@ -568,19 +579,46 @@ class ShrinkingRangePosition(Position):
             current_price = bar.close.as_double()
             position_age_minutes = self.age.total_seconds() / 60.0
 
+            # Only update orders if significant time has passed (at least 5 minutes)
+            # or if this is the first update after opening
+            min_update_interval = 5.0  # minutes
+            time_since_last_update = 0
+
+            if hasattr(self, '_last_update_time'):
+                time_since_last_update = (bar.ts_event - self._last_update_time) / 1_000_000_000 / 60.0  # Convert to minutes
+            else:
+                # Use the current time as the initial update time
+                self._last_update_time = bar.ts_event
+                time_since_last_update = min_update_interval  # Force an update on the first call
+
+            if time_since_last_update < min_update_interval:
+                return
+
+            # Store the current time as the last update time
+            self._last_update_time = bar.ts_event
+
+            # Calculate minimum price move to reduce order churn
+            min_price_move = self.instrument.price_increment.as_double() * 5  # Require at least 5 ticks movement
+
             # Update take profit price
             if self.initial_take_profit_price is not None and position_age_minutes > self.take_profit_hold:
                 decay_period = position_age_minutes - self.take_profit_hold
                 decay_ratio = min(1.0, decay_period / self.take_profit_decay)
                 new_take_profit = current_price + (1 - decay_ratio) * (self.initial_take_profit_price - current_price)
-                self._update_take_profit(new_take_profit)
+
+                # Only update if the price has changed significantly
+                if self._take_profit_price is None or abs(new_take_profit - self._take_profit_price) > min_price_move:
+                    self._update_take_profit(new_take_profit)
 
             # Update stop loss price
             if self.initial_stop_loss_price is not None and position_age_minutes > self.stop_loss_hold:
                 decay_period = position_age_minutes - self.stop_loss_hold
                 decay_ratio = min(1.0, decay_period / self.stop_loss_decay)
                 new_stop_loss = current_price + (1 - decay_ratio) * (self.initial_stop_loss_price - current_price)
-                self._update_stop_loss(new_stop_loss)
+
+                # Only update if the price has changed significantly
+                if self._stop_loss_price is None or abs(new_stop_loss - self._stop_loss_price) > min_price_move:
+                    self._update_stop_loss(new_stop_loss)
 
     def _update_take_profit(self, new_price: float) -> None:
         """
@@ -591,17 +629,23 @@ class ShrinkingRangePosition(Position):
         new_price : float
             The new take profit price.
         """
+        # Round the price to the instrument's precision
         if self._take_profit_price == new_price:
             return
 
         self._take_profit_price = new_price
 
-        # Cancel existing take profit order
+        # Cancel existing take profit order if it exists and can be canceled
         if self._take_profit_order_id is not None:
             # Get the order object from the cache
             order = self.strategy.cache.order(self._take_profit_order_id)
             if order is not None:
-                self.strategy.cancel_order(order)
+                try:
+                    # Check if order is in a state that can be canceled
+                    if order.status not in [OrderStatus.CANCELED, OrderStatus.FILLED, OrderStatus.REJECTED]:
+                        self.strategy.cancel_order(order)
+                except Exception as e:
+                    self.strategy._log.warning(f"Failed to cancel take profit order: {e}")
             self._take_profit_order_id = None
 
         # Place new take profit order
@@ -621,12 +665,17 @@ class ShrinkingRangePosition(Position):
 
         self._stop_loss_price = new_price
 
-        # Cancel existing stop loss order
+        # Cancel existing stop loss order if it exists and can be canceled
         if self._stop_loss_order_id is not None:
             # Get the order object from the cache
             order = self.strategy.cache.order(self._stop_loss_order_id)
             if order is not None:
-                self.strategy.cancel_order(order)
+                try:
+                    # Check if order is in a state that can be canceled
+                    if order.status not in [OrderStatus.CANCELED, OrderStatus.FILLED, OrderStatus.REJECTED]:
+                        self.strategy.cancel_order(order)
+                except Exception as e:
+                    self.strategy._log.warning(f"Failed to cancel stop loss order: {e}")
             self._stop_loss_order_id = None
 
         # Place new stop loss order

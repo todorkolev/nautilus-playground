@@ -63,6 +63,10 @@ RUN uv pip install --system jupyterlab
 COPY requirements.txt .
 RUN uv pip install --system -r requirements.txt
 
+# Various packages install a `tests` directory which causes pytest to use it instead of our local one. 
+# This is not what we want, so we are removing it.
+RUN python -c "import site; import os; [os.system(f'rm -rf {path}/tests') for path in site.getsitepackages()]"
+
 # =========================================================================
 # This section can be used to add additional customizations
 # CUSTOM EXTENSIONS SECTION - Add your custom installations below this line
