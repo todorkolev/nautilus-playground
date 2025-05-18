@@ -1,0 +1,41 @@
+# Market Maker Strategy Configuration
+strategy:
+  name: MarketMakerStrategy
+  module: src.strategies.market_maker.strategy
+  class: MarketMaker
+  config_class: MarketMakerConfig
+
+parameters:
+  # Required parameters
+  instrument_id: BTCUSDT.BINANCE
+  bar_type: BTCUSDT.BINANCE-1-HOUR-LAST-EXTERNAL
+
+  # Trading parameters
+  trade_size: 0.01
+  max_inventory: 0.05
+
+  # Market making parameters
+  spread_multiplier: 0.8  # Multiplier for the spread (0.8 = 80% of market spread)
+  min_spread_pct: 0.0005  # Minimum spread as percentage of price (0.05%)
+  max_spread_pct: 0.005   # Maximum spread as percentage of price (0.5%)
+
+  # Order parameters
+  order_refresh_seconds: 300  # How often to refresh orders (5 minutes)
+  order_levels: 2             # Number of order levels on each side
+  level_spacing_pct: 0.001    # Spacing between levels as percentage of price (0.1%)
+
+  # Risk management
+  inventory_skew_enabled: true  # Enable inventory skew
+  target_inventory_pct: 0.0     # Target inventory as percentage of max_inventory (0 = neutral)
+
+  # Order execution
+  time_in_force: "GTD"          # GTC, GTD, IOC, FOK
+  order_expire_minutes: 15      # For GTD orders, how many minutes until expiry
+  post_only: false              # Whether to use post-only orders (set to false to increase fill rate)
+
+data:
+  # Data requirements
+  instruments:
+    - id: BTCUSDT.BINANCE
+      bar_types:
+        - 1-HOUR

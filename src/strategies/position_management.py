@@ -502,6 +502,260 @@ class TrailingStopPosition(Position):
         self._place_stop_loss_order()
 
 
+class GridPosition(Position):
+    """
+    A position that implements a simplified grid trading strategy using only limit orders.
+
+    This position type places multiple limit orders at different price levels
+    to form a grid. It is designed for mean reversion markets where price
+    is expected to oscillate within a range.
+
+    Parameters
+    ----------
+    strategy : Strategy
+        The strategy managing this position.
+    instrument_id : InstrumentId
+        The instrument ID for the position.
+    side : Side
+        The position side (LONG or SHORT).
+    quantity : Decimal
+        The position quantity per grid level.
+    center_price : float
+        The center price for the grid.
+    grid_levels : int
+        The number of grid levels on each side of the center price.
+    grid_spacing : float
+        The spacing between grid levels in price units.
+    min_profit_to_cover_fees : float
+        The minimum profit required to cover trading fees.
+    """
+
+    def __init__(
+        self,
+        strategy: Strategy,
+        instrument_id: InstrumentId,
+        side: Side,
+        quantity: Decimal,
+        center_price: float,
+        grid_levels: int = 3,
+        grid_spacing: float = 0.01,
+        min_profit_to_cover_fees: float = 0.001,  # 0.1% by default
+    ):
+        self.center_price = center_price
+        self.grid_levels = grid_levels
+        self.grid_spacing = grid_spacing
+        self.min_profit_to_cover_fees = min_profit_to_cover_fees
+
+        # Store grid orders
+        self._grid_order_ids = []
+        self._active_positions = []
+        self._entry_prices = {}  # Map order_id to entry price
+
+        super().__init__(
+            strategy=strategy,
+            instrument_id=instrument_id,
+            side=side,
+            quantity=quantity,
+            entry_price=None,  # We'll use multiple entry prices
+            take_profit_price=None,  # No take profit orders in simplified version
+            stop_loss_price=None,  # No stop loss orders in simplified version
+            position_type="grid",
+        )
+
+    def setup_grid(self) -> None:
+        """
+        Set up the grid by placing limit orders at each grid level.
+        """
+        self.strategy._log.info(f"Setting up {self.side.value} grid with {self.grid_levels} levels, center: {self.center_price:.4f}, spacing: {self.grid_spacing:.4f}")
+
+        # Store the last time we placed orders to throttle order placement
+        self._last_order_time = datetime.now()
+
+        # Calculate grid prices based on side
+        if self.side == Side.LONG:
+            # For long positions, place buy orders below center price
+            base_price = self.center_price
+            # Place orders with increasing spacing to reduce order count
+            for i in range(self.grid_levels):
+                # Use exponential spacing to reduce order count
+                grid_price = base_price - (i + 1) * self.grid_spacing * (1.0 + i * 0.2)
+                self._place_grid_order(grid_price)
+        else:  # Side.SHORT
+            # For short positions, place sell orders above center price
+            base_price = self.center_price
+            # Place orders with increasing spacing to reduce order count
+            for i in range(self.grid_levels):
+                # Use exponential spacing to reduce order count
+                grid_price = base_price + (i + 1) * self.grid_spacing * (1.0 + i * 0.2)
+                self._place_grid_order(grid_price)
+
+    def _place_grid_order(self, price: float) -> None:
+        """
+        Place a limit order at the specified grid level.
+
+        Parameters
+        ----------
+        price : float
+            The price level for the grid order.
+        """
+        # Create a limit order
+        order_side = OrderSide.BUY if self.side == Side.LONG else OrderSide.SELL
+
+        # Use instrument's make_price method to ensure correct price precision
+        limit_price = self.instrument.make_price(price)
+
+        order = self.strategy.order_factory.limit(
+            instrument_id=self.instrument_id,
+            order_side=order_side,
+            quantity=self.instrument.make_qty(self.quantity),
+            price=limit_price,
+            time_in_force=TimeInForce.GTC,
+        )
+
+        # Submit the order
+        self.strategy.submit_order(order)
+        self._grid_order_ids.append(order.client_order_id)
+
+        # Store the entry price for this order
+        self._entry_prices[order.client_order_id] = price
+
+        self.strategy._log.info(
+            f"Placed grid {order_side.name} order at {price:.4f} with ID {order.client_order_id}"
+        )
+
+    def handle_order_event(self, event: OrderFilled) -> None:
+        """
+        Handle an order filled event.
+
+        Parameters
+        ----------
+        event : OrderFilled
+            The order filled event.
+        """
+        # Check if this is one of our grid orders
+        if event.client_order_id in self._grid_order_ids:
+            self.strategy._log.info(f"Grid order filled: {event.client_order_id} at price {event.last_px}")
+
+            # Get the entry price for this order
+            entry_price = event.last_px.as_double()
+
+            # Calculate the opposite side price that would cover fees
+            opposite_price = None
+            if self.side == Side.LONG:
+                # For long positions, we need to sell at a higher price
+                opposite_price = entry_price * (1 + self.min_profit_to_cover_fees)
+            else:  # Side.SHORT
+                # For short positions, we need to buy at a lower price
+                opposite_price = entry_price * (1 - self.min_profit_to_cover_fees)
+
+            # Create a position to track this filled grid level
+            position = Position(
+                strategy=self.strategy,
+                instrument_id=self.instrument_id,
+                side=self.side,
+                quantity=event.last_qty,
+                entry_price=entry_price,
+                position_type="grid_level",
+            )
+
+            # Set the position as opened
+            position._opened = True
+            position._entry_price = entry_price
+            position._entry_time = datetime.fromtimestamp(event.ts_event / 1_000_000_000)
+            position._filled_quantity = event.last_qty
+
+            # Add to active positions
+            self._active_positions.append(position)
+
+            # Remove the filled order ID from our tracking list
+            self._grid_order_ids.remove(event.client_order_id)
+            if event.client_order_id in self._entry_prices:
+                del self._entry_prices[event.client_order_id]
+
+            # Place a limit order on the opposite side to close the position
+            opposite_side = Side.SHORT if self.side == Side.LONG else Side.LONG
+            opposite_order_side = OrderSide.SELL if self.side == Side.LONG else OrderSide.BUY
+
+            # Use instrument's make_price method to ensure correct price precision
+            limit_price = self.instrument.make_price(opposite_price)
+
+            order = self.strategy.order_factory.limit(
+                instrument_id=self.instrument_id,
+                order_side=opposite_order_side,
+                quantity=self.instrument.make_qty(position._filled_quantity),
+                price=limit_price,
+                time_in_force=TimeInForce.GTC,
+            )
+
+            # Submit the order
+            self.strategy.submit_order(order)
+            position._take_profit_order_id = order.client_order_id
+
+            self.strategy._log.info(
+                f"Placed opposite {opposite_order_side.name} order at {opposite_price:.4f} with ID {order.client_order_id}"
+            )
+
+            # Place a new grid order to replace the filled one
+            if self.side == Side.LONG:
+                new_price = entry_price - self.grid_spacing
+            else:  # Side.SHORT
+                new_price = entry_price + self.grid_spacing
+
+            self._place_grid_order(new_price)
+
+        # Check if this is a take profit order from one of our active positions
+        for position in self._active_positions:
+            if position._take_profit_order_id is not None and event.client_order_id == position._take_profit_order_id:
+                # Position was closed, remove it from active positions
+                self._active_positions = [p for p in self._active_positions if p._take_profit_order_id != event.client_order_id]
+
+                exit_price = event.last_px.as_double()
+                profit = (exit_price - position._entry_price) if self.side == Side.LONG else (position._entry_price - exit_price)
+
+                self.strategy._log.info(
+                    f"Closed grid level position for {self.instrument_id}: "
+                    f"Profit = {profit:.4f}, Quantity: {event.last_qty}, "
+                    f"Entry Price = {position._entry_price:.4f}, Exit Price = {exit_price:.4f}"
+                )
+
+                # Place a new grid order at the exit price level
+                self._place_grid_order(exit_price)
+
+    def update(self, bar: Bar) -> None:
+        """
+        Update the position with the latest bar.
+
+        Parameters
+        ----------
+        bar : Bar
+            The latest bar.
+        """
+        super().update(bar)
+
+        # Update all active positions
+        for position in self._active_positions:
+            position.update(bar)
+
+    def close_all(self) -> None:
+        """
+        Close all grid positions and cancel all pending grid orders.
+        """
+        # Cancel all pending grid orders
+        for order_id in self._grid_order_ids:
+            order = self.strategy.cache.order(order_id)
+            if order is not None and order.is_active:
+                self.strategy.cancel_order(order)
+
+        # Close all active positions
+        for position in self._active_positions:
+            position.market_close()
+
+        self._grid_order_ids = []
+        self._active_positions = []
+
+        self.strategy._log.info(f"Closed all grid positions and canceled all pending grid orders")
+
+
 class ShrinkingRangePosition(Position):
     """
     A position with shrinking take profit and stop loss ranges.

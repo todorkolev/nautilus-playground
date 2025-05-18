@@ -22,7 +22,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import Enum
-from typing import Dict, List, Optional, Tuple, Any, Union
+from typing import Dict, List, Optional, Tuple, Any, Union, cast
 from dataclasses import field
 from pathlib import Path
 
@@ -46,7 +46,7 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.trading.strategy import Strategy
 
 from src.indicators.pandas_ta_indicator import PandasTaIndicator
-from src.strategies.position_management import Position, Side, ShrinkingRangePosition, TrailingStopPosition
+from src.strategies.position_management import Position, Side, ShrinkingRangePosition, TrailingStopPosition, GridPosition
 from src.strategies.mean_reversion.ml_model import LogisticRegressionModel, DecisionTreeModel, XGBoostModel
 
 
@@ -120,6 +120,16 @@ class MeanReversionStrategyConfig(StrategyConfig):
         The length parameter for ATR indicator.
     ml_training_lookback : int
         The number of bars to look ahead for ML training labels.
+    use_grid_strategy : bool
+        Whether to use grid trading strategy for mean reversion.
+    grid_levels : int
+        The number of grid levels to use in the grid strategy.
+    grid_spacing_multiplier : float
+        The multiplier for grid spacing (relative to standard deviation).
+    grid_take_profit_multiplier : float
+        The multiplier for take profit in grid strategy (relative to grid spacing).
+    grid_stop_loss_multiplier : float
+        The multiplier for stop loss in grid strategy (relative to grid spacing).
     """
 
     instrument_id: InstrumentId
@@ -128,12 +138,7 @@ class MeanReversionStrategyConfig(StrategyConfig):
     lookback: int = 168  # 7 days of hourly data
     std_dev_threshold: float = 2.0
     positions_per_side: int = 3
-    take_profit_std_dev_multiplier: float = 1.5
-    stop_loss_std_dev_multiplier: float = 2.0
-    take_profit_hold: float = 8 * 60  # 8 hours in minutes
-    take_profit_decay: float = 48 * 60  # 48 hours in minutes
-    stop_loss_hold: float = 8 * 60  # 8 hours in minutes
-    stop_loss_decay: float = 48 * 60  # 48 hours in minutes
+    # We keep trailing_stop_pct for trend following mode
     trailing_stop_pct: float = 0.005  # 0.5%
     ml_model_type: str = "xgboost"
     ml_confidence_threshold: float = 0.6
@@ -164,6 +169,11 @@ class MeanReversionStrategyConfig(StrategyConfig):
 
     # OU process parameters
     initial_theta: float = 0.5
+
+    # Grid strategy parameters
+    grid_levels: int = 3
+    grid_spacing_multiplier: float = 0.5  # Grid spacing = 0.5 * std_dev
+    min_profit_to_cover_fees: float = 0.002  # 0.2% minimum profit to cover fees
 
     @classmethod
     def from_yaml(cls, path: str) -> "MeanReversionStrategyConfig":
@@ -207,12 +217,7 @@ class MeanReversionStrategyConfig(StrategyConfig):
             lookback=params.get("lookback", 168),
             std_dev_threshold=params.get("std_dev_threshold", 2.0),
             positions_per_side=params.get("positions_per_side", 3),
-            take_profit_std_dev_multiplier=params.get("take_profit_std_dev_multiplier", 1.5),
-            stop_loss_std_dev_multiplier=params.get("stop_loss_std_dev_multiplier", 2.0),
-            take_profit_hold=params.get("take_profit_hold", 8 * 60),
-            take_profit_decay=params.get("take_profit_decay", 48 * 60),
-            stop_loss_hold=params.get("stop_loss_hold", 8 * 60),
-            stop_loss_decay=params.get("stop_loss_decay", 48 * 60),
+
             trailing_stop_pct=params.get("trailing_stop_pct", 0.005),
             ml_model_type=params.get("ml_model_type", "xgboost"),
             ml_confidence_threshold=params.get("ml_confidence_threshold", 0.6),
@@ -243,6 +248,11 @@ class MeanReversionStrategyConfig(StrategyConfig):
 
             # OU process parameters
             initial_theta=params.get("initial_theta", 0.5),
+
+            # Grid strategy parameters
+            grid_levels=params.get("grid_levels", 3),
+            grid_spacing_multiplier=params.get("grid_spacing_multiplier", 0.5),
+            min_profit_to_cover_fees=params.get("min_profit_to_cover_fees", 0.002),
         )
 
 
@@ -273,12 +283,7 @@ class MeanReversionStrategy(Strategy):
         self.lookback = config.lookback
         self.std_dev_threshold = config.std_dev_threshold
         self.positions_per_side = config.positions_per_side
-        self.take_profit_std_dev_multiplier = config.take_profit_std_dev_multiplier
-        self.stop_loss_std_dev_multiplier = config.stop_loss_std_dev_multiplier
-        self.take_profit_hold = config.take_profit_hold
-        self.take_profit_decay = config.take_profit_decay
-        self.stop_loss_hold = config.stop_loss_hold
-        self.stop_loss_decay = config.stop_loss_decay
+
         self.trailing_stop_pct = config.trailing_stop_pct
         self.ml_model_type = config.ml_model_type
         self.ml_confidence_threshold = config.ml_confidence_threshold
@@ -309,6 +314,14 @@ class MeanReversionStrategy(Strategy):
 
         # Logging parameters
         self.log_interval = config.log_interval
+
+        # Grid strategy parameters
+        self.grid_levels = config.grid_levels
+        self.grid_spacing_multiplier = config.grid_spacing_multiplier
+        self.min_profit_to_cover_fees = config.min_profit_to_cover_fees
+
+        # Track grid positions separately
+        self.grid_positions: Dict[Side, Optional[GridPosition]] = {Side.LONG: None, Side.SHORT: None}
 
         # Get instrument (may be None during backtesting setup)
         self.instrument = None  # Will be set in on_start
@@ -446,8 +459,14 @@ class MeanReversionStrategy(Strategy):
 
         # Update positions
         for side in Side:
+            # Update regular positions
             for position in self.positions[side]:
                 position.update(bar)
+
+            # Update grid positions
+            grid_position = self.grid_positions[side]
+            if grid_position is not None:
+                grid_position.update(bar)
 
         # Check if we have enough data
         if len(self.hour_bars) < self.lookback:
@@ -599,7 +618,7 @@ class MeanReversionStrategy(Strategy):
 
         self._log.info(f"ADF test p-value: {p_value:.4f}, stationary: {is_stationary}")
 
-        return is_stationary, p_value
+        return bool(is_stationary), float(p_value)
 
     def estimate_ou_parameters(self, prices: np.ndarray, returns: np.ndarray) -> None:
         """
@@ -627,11 +646,11 @@ class MeanReversionStrategy(Strategy):
         theta, mu, sigma = res.x
 
         # Store the parameters
-        self.grid_mean = np.exp(mu)
-        self.grid_std_dev = np.std(prices)
-        self.ou_theta = theta
-        self.ou_mu = mu
-        self.ou_sigma = sigma
+        self.grid_mean = float(np.exp(mu))
+        self.grid_std_dev = float(np.std(prices))
+        self.ou_theta = float(theta)
+        self.ou_mu = float(mu)
+        self.ou_sigma = float(sigma)
 
         self._log.info(f"OU parameters: mean={self.grid_mean:.2f}, std_dev={self.grid_std_dev:.2f}, "
                       f"theta={self.ou_theta:.4f}, mu={self.ou_mu:.4f}, sigma={self.ou_sigma:.4f}")
@@ -670,92 +689,49 @@ class MeanReversionStrategy(Strategy):
         """
         # Note: is_stationary parameter is not currently used but kept for future enhancements
 
-        # Check if we already have the maximum number of positions for this side
-        if len(self.positions[side]) >= self.positions_per_side:
-            self._log.info(f"Maximum number of {side.value} positions reached")
+        # Check if we have the required data for grid trading
+        if self.grid_std_dev is not None:
+            # Check if we already have a grid position for this side
+            if self.grid_positions[side] is not None:
+                self._log.info(f"Grid position for {side.value} already exists")
+                return
+
+            # Calculate grid spacing based on standard deviation
+            grid_spacing = self.grid_std_dev * self.grid_spacing_multiplier
+
+            # Ensure grid spacing is large enough to cover trading fees
+            min_grid_spacing = current_price * self.min_profit_to_cover_fees
+            if grid_spacing < min_grid_spacing:
+                self._log.info(f"Increasing grid spacing from {grid_spacing:.4f} to {min_grid_spacing:.4f} to cover trading fees")
+                grid_spacing = min_grid_spacing
+
+            self._log.info(f"Setting up {side.value} grid with center price {current_price:.4f}, "
+                          f"grid spacing {grid_spacing:.4f}, "
+                          f"min profit to cover fees {self.min_profit_to_cover_fees:.4f}")
+
+            # Create a new grid position with simplified approach
+            grid_position = GridPosition(
+                strategy=self,
+                instrument_id=self.instrument_id,
+                side=side,
+                quantity=self.trade_size,
+                center_price=current_price,
+                grid_levels=self.grid_levels,
+                grid_spacing=grid_spacing,
+                min_profit_to_cover_fees=self.min_profit_to_cover_fees,
+            )
+
+            # Set up the grid
+            grid_position.setup_grid()
+
+            # Store the grid position
+            self.grid_positions[side] = grid_position
+
             return
 
-        # Check if we have any active orders for this side that are still pending
-        active_orders_count = 0
-        for position in self.positions[side]:
-            if position._initial_order_id is not None and not position._opened:
-                order = self.cache.order(position._initial_order_id)
-                if order is not None and order.is_active:
-                    active_orders_count += 1
-
-        if active_orders_count > 0:
-            self._log.info(f"Already have {active_orders_count} pending orders for {side.value}, skipping new grid level")
-            return
-
-        # Check if we need to create a new grid level
-        last_price = self.last_grid_prices[side]
-
-        # Increase the grid level threshold to reduce the number of grid levels
-        effective_threshold = self.grid_level_threshold * 1.5
-
-        # Check if price has moved enough from the last grid level and grid_std_dev is available
-        if self.grid_std_dev is not None and (last_price is None or abs(current_price - last_price) / self.grid_std_dev > effective_threshold):
-            # Check if there are any existing positions that are too close to the current price
-            min_distance_std_dev = effective_threshold * 0.75
-            too_close = False
-
-            # Only check distance if grid_std_dev is available
-            if self.grid_std_dev is not None:
-                for position in self.positions[side]:
-                    if position._entry_price is not None:
-                        position_distance = abs(current_price - position._entry_price) / self.grid_std_dev
-                        if position_distance < min_distance_std_dev:
-                            too_close = True
-                            self._log.info(f"Skipping new grid level - too close to existing position at {position._entry_price:.2f}")
-                            break
-
-            if not too_close:
-                self._log.info(f"Creating new grid level for {side.value} at {current_price:.2f}")
-
-                # Calculate take profit and stop loss prices
-                take_profit_price = None
-                stop_loss_price = None
-
-                # Only calculate take profit and stop loss if grid_std_dev is available
-                if self.grid_std_dev is not None:
-                    if side == Side.LONG:
-                        take_profit_price = current_price + self.take_profit_std_dev_multiplier * self.grid_std_dev
-                        stop_loss_price = current_price - self.stop_loss_std_dev_multiplier * self.grid_std_dev
-                    else:  # Side.SHORT
-                        take_profit_price = current_price - self.take_profit_std_dev_multiplier * self.grid_std_dev
-                        stop_loss_price = current_price + self.stop_loss_std_dev_multiplier * self.grid_std_dev
-                else:
-                    # Use percentage-based take profit and stop loss if grid_std_dev is not available
-                    if side == Side.LONG:
-                        take_profit_price = current_price * (1 + 0.02)  # 2% take profit
-                        stop_loss_price = current_price * (1 - 0.01)    # 1% stop loss
-                    else:  # Side.SHORT
-                        take_profit_price = current_price * (1 - 0.02)  # 2% take profit
-                        stop_loss_price = current_price * (1 + 0.01)    # 1% stop loss
-
-                # Create a new position
-                position = ShrinkingRangePosition(
-                    strategy=self,
-                    instrument_id=self.instrument_id,
-                    side=side,
-                    quantity=self.trade_size,
-                    entry_price=current_price,
-                    take_profit_price=take_profit_price,
-                    stop_loss_price=stop_loss_price,
-                    take_profit_hold=self.take_profit_hold,
-                    take_profit_decay=self.take_profit_decay,
-                    stop_loss_hold=self.stop_loss_hold,
-                    stop_loss_decay=self.stop_loss_decay,
-                )
-
-                # Open the position
-                position.market_open()
-
-                # Add to positions list
-                self.positions[side].append(position)
-
-                # Update last grid price
-                self.last_grid_prices[side] = current_price
+        # If grid_std_dev is not available, log a warning and don't create a grid
+        self._log.warning(f"Cannot create grid position: grid_std_dev is None")
+        return
 
     def manage_trend_position(self, side: Side, current_price: float) -> None:
         """
@@ -800,10 +776,18 @@ class MeanReversionStrategy(Strategy):
         """
         Close all open positions.
         """
+        # Close regular positions
         for side in Side:
             for position in self.positions[side]:
                 position.market_close()
             self.positions[side] = []
+
+        # Close grid positions
+        for side in Side:
+            grid_position = self.grid_positions[side]
+            if grid_position is not None:
+                grid_position.close_all()
+                self.grid_positions[side] = None
 
     def extract_ml_features(self, adf_pvalue: float, distance: float, returns: np.ndarray) -> np.ndarray:
         """
@@ -970,7 +954,13 @@ class MeanReversionStrategy(Strategy):
         """
         self._log.info(f"Order filled: {event}")
 
-        # Update positions
+        # Check if this is a grid position order
+        for side in Side:
+            grid_position = self.grid_positions[side]
+            if grid_position is not None:
+                grid_position.handle_order_event(event)
+
+        # Update regular positions
         for side in Side:
             for position in self.positions[side]:
                 if position._initial_order_id == event.client_order_id:

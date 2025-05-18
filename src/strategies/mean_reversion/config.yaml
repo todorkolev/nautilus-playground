@@ -18,14 +18,11 @@ parameters:
   lookback: 168  # 7 days of hourly data
   std_dev_threshold: 2.5
 
-  # Take profit and stop loss parameters
-  take_profit_std_dev_multiplier: 1.2
-  stop_loss_std_dev_multiplier: 1.5
-  take_profit_hold: 240  # 4 hours in minutes
-  take_profit_decay: 1440  # 24 hours in minutes
-  stop_loss_hold: 240  # 4 hours in minutes
-  stop_loss_decay: 1440  # 24 hours in minutes
-  trailing_stop_pct: 0.01  # 1.0%
+  # Grid trading parameters
+  grid_levels: 3
+  grid_spacing_multiplier: 0.5  # Grid spacing = 0.5 * std_dev
+  min_profit_to_cover_fees: 0.002  # 0.2% minimum profit to cover fees
+  trailing_stop_pct: 0.01  # 1.0% (used only for trend following)
 
   # ML model parameters
   ml_model_type: "xgboost"  # Options: "logistic_regression", "decision_tree"

@@ -48,10 +48,12 @@ from typing import Dict, List, Optional, Any
 # Add the current directory to the Python path
 sys.path.insert(0, os.getcwd())
 
-from nautilus_trader.backtest.node import BacktestNode, BacktestDataConfig, BacktestVenueConfig
+from nautilus_trader.backtest.node import BacktestNode
+from nautilus_trader.backtest.config import BacktestDataConfig, BacktestVenueConfig
+from nautilus_trader.backtest.models import FillModel
 from nautilus_trader.config import BacktestRunConfig, BacktestEngineConfig, ImportableStrategyConfig
 from nautilus_trader.config import LoggingConfig
-from nautilus_trader.model.currencies import USDT
+from nautilus_trader.model.identifiers import Venue
 
 
 logging.basicConfig(level=logging.INFO)
@@ -216,7 +218,9 @@ def main() -> None:
             sys.exit(1)
 
         # Load configuration from file
-        config = BacktestRunConfig.from_yaml(str(config_path))
+        with open(config_path, 'r') as f:
+            config_dict = yaml.safe_load(f)
+            config = BacktestRunConfig(**config_dict)
     elif args.strategy:
         # Load strategy configurations
         strategy_paths = args.strategy
@@ -247,20 +251,51 @@ def main() -> None:
         end_date=args.end_date,
     )
 
-    # Create venue configuration
+    # Create a fill model with optimal parameters
+    fill_model = FillModel(
+        prob_fill_on_limit=1.0,  # 100% chance of limit orders filling when price matches
+        prob_fill_on_stop=1.0,   # 100% chance of stop orders filling when price matches
+        prob_slippage=0.0,       # 0% chance of slippage
+        random_seed=42,          # For reproducibility
+    )
+
+    # Create venue configuration with L1_MBP book type for bar data
     venue_configs = [
         BacktestVenueConfig(
             name="BINANCE",
             oms_type="NETTING",
             account_type="MARGIN",
-            base_currency=USDT,
+            base_currency=None,
             starting_balances=["1000000 USDT"],
+            book_type="L1_MBP",     # Use L1 Market-by-Price for bar data
+            bar_adaptive_high_low_ordering=True,
         ),
     ]
+
+    # Process start and end dates
+    start_time = None
+    end_time = None
+
+    if args.start_date:
+        try:
+            start_time = datetime.strptime(args.start_date, "%Y-%m-%d")
+            logger.info(f"Using start date: {start_time}")
+        except ValueError:
+            logger.error(f"Invalid start date format: {args.start_date}. Expected YYYY-MM-DD")
+            sys.exit(1)
+
+    if args.end_date:
+        try:
+            end_time = datetime.strptime(args.end_date, "%Y-%m-%d")
+            logger.info(f"Using end date: {end_time}")
+        except ValueError:
+            logger.error(f"Invalid end date format: {args.end_date}. Expected YYYY-MM-DD")
+            sys.exit(1)
 
     # Create the backtest run configuration
     config = BacktestRunConfig(
         engine=BacktestEngineConfig(
+            trader_id="BACKTESTER-001",
             strategies=strategies,
             logging=LoggingConfig(log_level=args.log_level),
         ),
@@ -268,28 +303,23 @@ def main() -> None:
         venues=venue_configs,
     )
 
-    # Override start and end dates if provided
-    if args.start_date:
-        try:
-            start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
-            config.engine.start_time = start_date
-            logger.info(f"Using start date: {start_date}")
-        except ValueError:
-            logger.error(f"Invalid start date format: {args.start_date}. Expected YYYY-MM-DD")
-            sys.exit(1)
-
-    if args.end_date:
-        try:
-            end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
-            config.engine.end_time = end_date
-            logger.info(f"Using end date: {end_date}")
-        except ValueError:
-            logger.error(f"Invalid end date format: {args.end_date}. Expected YYYY-MM-DD")
-            sys.exit(1)
+    # After creating the node, we'll add the fill model to the venue
 
     try:
         # Initialize and run the backtest node
         node = BacktestNode(configs=[config])
+
+        # Get the engine from the node
+        engine = node.get_engine(config.id)
+
+        # Set the fill model for the BINANCE venue
+        if engine is not None:
+            engine.change_fill_model(venue=Venue("BINANCE"), model=fill_model)
+        else:
+            logger.error("Could not get engine from node, fill model not applied")
+            # raise Exception("Could not get engine from node, fill model not applied")
+
+        # Run the backtest
         node.run()
 
         # Print summary results
