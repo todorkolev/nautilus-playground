@@ -24,6 +24,7 @@ from nautilus_trader.model.objects import Price, Quantity
 from nautilus_trader.model.orders import LimitOrder, MarketOrder
 from nautilus_trader.model.position import Position
 from nautilus_trader.trading.strategy import Strategy
+from nautilus_trader.model.currencies import USDT
 
 from src.indicators.pandas_ta_indicator import PandasTaIndicator
 from src.strategies.market_maker.spread_capture import SpreadCapture
@@ -41,10 +42,9 @@ class MarketMakerConfig(StrategyConfig, frozen=True):
         The instrument ID for the strategy.
     bar_type : BarType
         The bar type for the strategy.
-    trade_size : Decimal
-        The size for each order.
-    max_inventory : Decimal
-        The maximum inventory size allowed.
+    order_levels : int
+        Number of order levels on each side. This determines how capital is allocated.
+        Capital is divided equally among all order levels.
     spread_multiplier : float
         Multiplier for the spread (1.0 = use market spread).
     min_spread_pct : float
@@ -53,14 +53,12 @@ class MarketMakerConfig(StrategyConfig, frozen=True):
         Maximum spread as percentage of price.
     order_refresh_seconds : int
         How often to refresh orders in seconds.
-    order_levels : int
-        Number of order levels on each side.
     level_spacing_pct : float
         Spacing between levels as percentage of price.
     inventory_skew_enabled : bool
         Whether to enable inventory skew.
     target_inventory_pct : float
-        Target inventory as percentage of max_inventory.
+        Target inventory as percentage of max inventory.
     time_in_force : TimeInForce
         Time in force for orders (GTC, GTD, IOC, FOK).
     order_expire_minutes : int
@@ -99,9 +97,8 @@ class MarketMakerConfig(StrategyConfig, frozen=True):
     instrument_id: InstrumentId
     bar_type: BarType
 
-    # Core trading parameters
-    trade_size: Decimal = Decimal("0.01")
-    max_inventory: Decimal = Decimal("0.05")
+    # Capital allocation is determined by order_levels
+    # trade_size and max_inventory are calculated dynamically
 
     # Spread capture parameters
     spread_multiplier: float = 1.0
@@ -155,6 +152,10 @@ class MarketMakerConfig(StrategyConfig, frozen=True):
     dynamic_sizing: bool = False
     volatility_factor: float = 1.0
 
+    # Fee consideration
+    consider_fees: bool = True
+    min_profit_pct: float = 0.0001  # Minimum profit percentage (0.01%)
+
 
 class MarketMaker(Strategy):
     """
@@ -176,8 +177,11 @@ class MarketMaker(Strategy):
         # Configuration
         self.instrument_id = config.instrument_id
         self.bar_type = config.bar_type
-        self.trade_size = config.trade_size
-        self.max_inventory = config.max_inventory
+
+        # Initialize trade_size and max_inventory with default values
+        # These will be dynamically calculated based on capital
+        self.trade_size = Decimal("0.01")  # Default initial value
+        self.max_inventory = Decimal("0.05")  # Default initial value
 
         # Convert float/int config values to Decimal to avoid repeated conversions
         self._spread_multiplier = Decimal(str(config.spread_multiplier))
@@ -229,6 +233,13 @@ class MarketMaker(Strategy):
         # Dynamic sizing
         self.dynamic_sizing = config.dynamic_sizing
 
+        # Set fixed values for capital utilization (always 100%)
+        self._capital_utilization_pct = Decimal("1.0")  # 100%
+
+        # Fee consideration
+        self.consider_fees = config.consider_fees
+        self.min_profit_pct = config.min_profit_pct
+
         # Get instrument (may be None during backtesting setup)
         self.instrument = None  # Will be set in on_start
 
@@ -244,6 +255,10 @@ class MarketMaker(Strategy):
         self.grid_mean: Optional[Decimal] = None
         self.grid_std_dev: Optional[Decimal] = None
         self.last_market_regime_check: Optional[pd.Timestamp] = None
+
+        # Capital utilization state
+        self.available_capital: Optional[Decimal] = None
+        self.initial_trade_size: Decimal = self.trade_size  # Store original trade size for reference
 
         # Trend detection state
         self.current_trend: Optional[str] = None  # 'UP', 'DOWN', or None
@@ -271,11 +286,12 @@ class MarketMaker(Strategy):
             params={"length": self.atr_period},
         )
 
-        # ADX for trend strength
+        # ADX for trend strength (includes +DI and -DI)
         self.adx = PandasTaIndicator(
             bar_type=self.bar_type,
             indicator_name="adx",
             params={"length": self.adx_period},
+            # Don't specify output_index to ensure all values (ADX, +DI, -DI) are stored in outputs
         )
 
         # RSI for overbought/oversold conditions
@@ -290,7 +306,7 @@ class MarketMaker(Strategy):
             bar_type=self.bar_type,
             indicator_name="bbands",
             params={"length": self.bbands_length, "std": self.bbands_std},
-            output_index=1,  # Middle band (mean)
+            # Don't specify output_index to ensure all bands are stored in outputs
         )
 
         # Register indicators
@@ -447,71 +463,122 @@ class MarketMaker(Strategy):
                         self._log.warning("Autocorrelation calculation resulted in NaN")
                         return
 
+                    # Reset trend flags at the beginning of each regime detection
+                    self.skip_buy_side = False
+                    self.skip_sell_side = False
+
+                    # Get +DI and -DI values for trend direction regardless of regime
+                    plus_di = None
+                    minus_di = None
+                    using_fallback = False
+
+                    try:
+                        # Get DI values from ADX indicator outputs
+                        if not self.adx.initialized:
+                            self._log.warning("ADX indicator not initialized, using default DI values")
+                            plus_di = 20
+                            minus_di = 20
+                            using_fallback = True
+                        else:
+                            # Get the outputs dictionary
+                            adx_outputs = self.adx.outputs
+
+                            # Log the available keys for debugging
+                            self._log.debug(f"ADX outputs keys: {list(adx_outputs.keys())}")
+
+                            # Use the proper pandas-ta ADX column names with period suffix
+                            dmp_key = f"DMP_{self.adx_period}"
+                            dmn_key = f"DMN_{self.adx_period}"
+
+                            if dmp_key in adx_outputs and dmn_key in adx_outputs:
+                                plus_di = adx_outputs[dmp_key]
+                                minus_di = adx_outputs[dmn_key]
+                                self._log.debug(f"+DI={plus_di:.2f}, -DI={minus_di:.2f}")
+                            else:
+                                self._log.warning(f"Expected DI keys {dmp_key}/{dmn_key} not found in ADX outputs, using default values")
+                                plus_di = 20
+                                minus_di = 20
+                                using_fallback = True
+                    except Exception as e:
+                        self._log.warning(f"Error getting directional indicators: {e}")
+                        # Safe fallback values
+                        plus_di = 20
+                        minus_di = 20
+                        using_fallback = True
+
+                    # Determine trend direction based on DI values
+                    if plus_di > minus_di:
+                        trend_direction = 'UP'
+                    elif minus_di > plus_di:
+                        trend_direction = 'DOWN'
+                    else:
+                        trend_direction = 'NEUTRAL'
+
                     # Negative autocorrelation suggests mean reversion
                     is_mean_reverting = (autocorr < float(self._autocorr_threshold) and
                                         adx_value < self.adx_threshold)
 
-                    # Detect trend direction for trend skew
-                    self.skip_buy_side = False
-                    self.skip_sell_side = False
+                    # Classify market regime based on ADX value
+                    if adx_value >= self.trend_strength_threshold:
+                        # Strong trend
+                        self.current_trend = f"STRONG_{trend_direction}"
+                        self.is_mean_reverting = False
 
-                    if self.enable_trend_skew and adx_value >= self.trend_strength_threshold:
-                        # Get +DI and -DI values for trend direction
-                        plus_di = None
-                        minus_di = None
+                        # Apply trend skew if enabled
+                        if self.enable_trend_skew:
+                            if trend_direction == 'UP':
+                                # In uptrend, reduce sell orders
+                                self.skip_sell_side = True
+                                self._log.info(f"Detected strong uptrend: ADX={adx_value:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}")
+                            elif trend_direction == 'DOWN':
+                                # In downtrend, reduce buy orders
+                                self.skip_buy_side = True
+                                self._log.info(f"Detected strong downtrend: ADX={adx_value:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}")
+                    elif adx_value >= self.adx_threshold:
+                        # Weak trend (between adx_threshold and trend_strength_threshold)
+                        self.current_trend = f"WEAK_{trend_direction}"
+                        self.is_mean_reverting = False
 
-                        # Try to get +DI and -DI from indicator outputs
-                        try:
-                            # Assuming the ADX indicator outputs include +DI and -DI
-                            # This may need adjustment based on the actual implementation
-                            adx_outputs = self.adx.outputs
-                            if isinstance(adx_outputs, dict) and 'plus_di' in adx_outputs and 'minus_di' in adx_outputs:
-                                plus_di = adx_outputs['plus_di']
-                                minus_di = adx_outputs['minus_di']
-
-                            # If we couldn't get +DI and -DI from outputs, use price action
-                            if plus_di is None or minus_di is None:
-                                # Simple trend detection based on recent price action
-                                short_ma = np.mean(prices[-5:])
-                                long_ma = np.mean(prices[-20:])
-
-                                if short_ma > long_ma:
-                                    plus_di = 25
-                                    minus_di = 15
-                                else:
-                                    plus_di = 15
-                                    minus_di = 25
-
-                            # Determine trend direction
-                            if plus_di > minus_di:
-                                self.current_trend = 'UP'
-                                self.skip_sell_side = True  # Skip sell orders in uptrend
-                                self._log.info(f"Detected uptrend: ADX={adx_value:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}")
+                        # Apply mild trend skew for weak trends if enabled
+                        if self.enable_trend_skew:
+                            # For weak trends, apply a milder version of trend skew
+                            if trend_direction == 'UP':
+                                # In weak uptrend, slightly reduce sell orders but don't skip
+                                self._log.info(f"Detected weak uptrend: ADX={adx_value:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}")
+                            elif trend_direction == 'DOWN':
+                                # In weak downtrend, slightly reduce buy orders but don't skip
+                                self._log.info(f"Detected weak downtrend: ADX={adx_value:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}")
                             else:
-                                self.current_trend = 'DOWN'
-                                self.skip_buy_side = True  # Skip buy orders in downtrend
-                                self._log.info(f"Detected downtrend: ADX={adx_value:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}")
-                        except Exception as e:
-                            self._log.warning(f"Error detecting trend direction: {e}")
-                            self.current_trend = None
+                                self._log.info(f"Detected weak neutral trend: ADX={adx_value:.2f}, +DI={plus_di:.2f}, -DI={minus_di:.2f}")
                     else:
-                        self.current_trend = None
+                        # Mean-reverting or neutral market
+                        if is_mean_reverting:
+                            self.current_trend = 'MEAN_REVERTING'
+                            self.is_mean_reverting = True
 
-                    if is_mean_reverting:
-                        self._log.info(f"Detected mean-reverting market: ADX={adx_value:.2f}, Autocorr={autocorr:.4f}")
+                            # Set grid parameters for mean reversion trading
+                            self.grid_mean = Decimal(str(np.mean(prices[-self.bbands_length:])))
+                            self.grid_std_dev = Decimal(str(np.std(prices[-self.bbands_length:])))
 
-                        # Set grid parameters for mean reversion trading
-                        self.grid_mean = Decimal(str(np.mean(prices[-self.bbands_length:])))
-                        self.grid_std_dev = Decimal(str(np.std(prices[-self.bbands_length:])))
+                            # In mean-reverting markets, don't skip either side
+                            self.skip_buy_side = False
+                            self.skip_sell_side = False
 
-                        # In mean-reverting markets, don't skip either side
-                        self.skip_buy_side = False
-                        self.skip_sell_side = False
-                    else:
-                        self._log.debug(f"Detected trending market: ADX={adx_value:.2f}, Autocorr={autocorr:.4f}")
+                            self._log.info(f"Detected mean-reverting market: ADX={adx_value:.2f}, Autocorr={autocorr:.4f}")
+                        else:
+                            # Low ADX but not mean-reverting - neutral market
+                            self.current_trend = 'NEUTRAL'
+                            self.is_mean_reverting = False
 
-                    # Update state
-                    self.is_mean_reverting = is_mean_reverting
+                            # Ensure flags are explicitly reset for neutral markets
+                            self.skip_buy_side = False
+                            self.skip_sell_side = False
+
+                            self._log.debug(f"Detected neutral market: ADX={adx_value:.2f}, Autocorr={autocorr:.4f}")
+
+                    # Log if we're using fallback method for DI values
+                    if using_fallback:
+                        self._log.debug(f"Using fallback trend detection: +DI={plus_di:.2f}, -DI={minus_di:.2f}")
 
                 except (ValueError, IndexError) as e:
                     self._log.warning(f"Error calculating autocorrelation: {e}")
@@ -581,6 +648,92 @@ class MarketMaker(Strategy):
             self.refresh_orders()
             self.last_order_refresh_time = current_time
 
+    def _calculate_optimal_order_sizes(self) -> None:
+        """
+        Calculate optimal order sizes based on available capital.
+
+        This method adjusts trade sizes to maximize capital utilization
+        in live trading while gracefully falling back to configured sizes
+        in backtesting environments.
+        """
+        # Validate prerequisites
+        if self.instrument is None:
+            self._log.warning("Cannot calculate optimal order sizes: instrument is None")
+            return
+
+        if self.mid_price is None:
+            self._log.warning("Cannot calculate optimal order sizes: mid_price is None")
+            return
+
+        if self.mid_price <= Decimal("0"):
+            self._log.warning(f"Cannot calculate optimal order sizes: invalid mid_price {self.mid_price}")
+            return
+
+        # Store original trade size
+        original_trade_size = self.trade_size
+
+        try:
+            # Get the account for this venue
+            venue = self.instrument_id.venue
+            account = self.portfolio.account(venue)
+
+            if not account:
+                error_msg = f"No account found for venue {venue}"
+                self._log.error(error_msg)
+                raise ValueError(error_msg)
+
+            # Try to determine the appropriate currency
+            currency = USDT
+
+            free_balance = account.balance_free(currency)
+            total_capital = free_balance.as_decimal()
+
+            # Store for reference
+            self.available_capital = total_capital
+            self._log.info(f"Available capital: {total_capital}")
+
+
+            # Calculate the total number of orders we'll place (order_levels on each side)
+            total_orders = self.order_levels * 2  # Buy and sell sides
+
+            # Calculate capital per order by dividing total capital by number of orders
+            capital_per_order_pct = Decimal("1.0") / Decimal(str(total_orders))
+            self._log.info(f"Capital per order percentage: {capital_per_order_pct * Decimal('100.0')}%")
+
+            # Calculate capital allocated per order
+            capital_per_order = total_capital * capital_per_order_pct
+            self._log.info(f"Capital per order: {capital_per_order}")
+
+            # Calculate size based on price
+            target_size = capital_per_order / self.mid_price
+            self._log.info(f"Raw target size: {target_size}")
+
+            # Ensure minimum size
+            min_size = self.instrument.size_increment * Decimal("10.0")
+            if target_size < min_size:
+                self._log.info(f"Target size {target_size} below minimum {min_size}, using minimum")
+                target_size = min_size
+
+            # Round to instrument precision
+            target_size = (target_size // self.instrument.size_increment) * self.instrument.size_increment
+            self._log.info(f"Final target size after rounding: {target_size}")
+
+            # Update trade size if significantly different (>10% change)
+            if target_size > Decimal("0") and abs((target_size / self.trade_size) - Decimal("1.0")) > Decimal("0.1"):
+                old_size = self.trade_size
+                self.trade_size = target_size
+                self._log.info(f"Adjusted trade size from {old_size} to {target_size} for optimal capital utilization")
+            else:
+                self._log.debug(f"Keeping current trade size {self.trade_size} (change not significant)")
+
+        except Exception as e:
+            # Revert to original trade size on any error
+            self.trade_size = original_trade_size
+            error_msg = f"Error calculating optimal order sizes: {e}"
+            self._log.error(error_msg)
+            # Re-raise the exception to stop order placement
+            raise RuntimeError(error_msg) from e
+
     def _compute_reference_price(self) -> Optional[Decimal]:
         """
         Compute the reference price for order placement based on market regime.
@@ -603,121 +756,8 @@ class MarketMaker(Strategy):
 
         return reference_price
 
-    def _compute_order_params(self, level: int) -> Optional[Dict]:
-        """
-        Compute order parameters for a specific level.
-
-        Parameters
-        ----------
-        level : int
-            The level index (0 for closest to mid price, increasing for further levels)
-
-        Returns
-        -------
-        dict or None
-            Dictionary containing order parameters or None if calculation failed
-        """
-        if self.mid_price is None or self.spread is None or self.instrument is None:
-            return None
-
-        reference_price = self._compute_reference_price()
-        if reference_price is None:
-            return None
-
-        # Calculate inventory skew factor
-        inventory_skew_factor = Decimal("1.0")
-        if self.inventory_skew_enabled:
-            # Calculate current inventory as percentage of max inventory
-            current_inventory_pct = self.current_inventory / self.max_inventory if self.max_inventory != 0 else Decimal("0")
-
-            # Calculate skew based on difference from target
-            inventory_skew = current_inventory_pct - self._target_inventory_pct
-
-            # Apply skew factor (reduce buy size when inventory > target, reduce sell size when inventory < target)
-            inventory_skew_factor = Decimal("1.0") - (inventory_skew * Decimal("0.5"))
-            inventory_skew_factor = max(min(inventory_skew_factor, Decimal("2.0")), Decimal("0.0"))
-
-        # Calculate level offset
-        level_offset_pct = self._level_spacing_pct * Decimal(str(level))
-
-        # Calculate relative spread as percentage of price
-        relative_spread_pct = self.spread / self.mid_price if self.mid_price != 0 else Decimal("0.001")
-
-        # Calculate base spread percentage with bounds
-        base_spread_pct = max(min(self._spread_multiplier * relative_spread_pct,
-                                self._max_spread_pct),
-                            self._min_spread_pct)
-
-        # Apply ATR adjustment if available
-        if self.atr.initialized and self.atr.value is not None:
-            try:
-                atr_value = Decimal(str(self.atr.value))
-                atr_factor = atr_value / (self.mid_price * Decimal("0.01")) if self.mid_price != 0 else Decimal("1.0")
-
-                # Adjust spread based on market regime
-                if self.is_mean_reverting:
-                    # Tighter spreads in mean-reverting markets
-                    base_spread_pct = base_spread_pct * (Decimal("1.0") + atr_factor * Decimal("0.3"))
-                else:
-                    # Wider spreads in trending markets
-                    base_spread_pct = base_spread_pct * (Decimal("1.0") + atr_factor * Decimal("0.7"))
-            except (ValueError, TypeError):
-                # Handle case where ATR value is NaN or invalid
-                self._log.warning(f"Invalid ATR value: {self.atr.value}, using base spread")
-
-        # Calculate bid and ask prices
-        bid_spread = base_spread_pct / Decimal("2.0") + level_offset_pct
-        ask_spread = base_spread_pct / Decimal("2.0") + level_offset_pct
-
-        # Ensure prices are valid
-        try:
-            # Use reference price for price calculation
-            bid_price = reference_price * (Decimal("1.0") - bid_spread)
-            ask_price = reference_price * (Decimal("1.0") + ask_spread)
-
-            # Check for NaN or invalid values
-            if bid_price.is_nan() or ask_price.is_nan():
-                self._log.warning(f"Generated NaN price values, skipping order placement")
-                return None
-        except Exception as e:
-            self._log.error(f"Error calculating prices: {e}")
-            return None
-
-        # Adjust for inventory skew
-        buy_size = self.trade_size * inventory_skew_factor
-        sell_size = self.trade_size * (Decimal("2.0") - inventory_skew_factor)
-
-        # Apply dynamic sizing based on volatility if enabled
-        if self.dynamic_sizing and self.atr.initialized and self.atr.value is not None:
-            try:
-                atr_value = Decimal(str(self.atr.value))
-                volatility_ratio = atr_value / (self.mid_price * Decimal("0.01"))
-
-                # Scale size based on volatility
-                volatility_adjustment = self._volatility_factor * volatility_ratio
-
-                # Limit the adjustment to reasonable bounds
-                volatility_adjustment = max(min(volatility_adjustment, Decimal("2.0")), Decimal("0.5"))
-
-                buy_size = buy_size * volatility_adjustment
-                sell_size = sell_size * volatility_adjustment
-
-                self._log.debug(f"Dynamic sizing: volatility_ratio={volatility_ratio:.4f}, adjustment={volatility_adjustment:.4f}")
-            except (ValueError, TypeError):
-                self._log.warning(f"Invalid ATR value for dynamic sizing: {self.atr.value}")
-
-        # Ensure minimum size
-        min_size = self.instrument.min_quantity
-        buy_size = max(buy_size, min_size)
-        sell_size = max(sell_size, min_size)
-
-        return {
-            "bid_price": bid_price,
-            "ask_price": ask_price,
-            "buy_size": buy_size,
-            "sell_size": sell_size,
-            "level": level,
-        }
+    # _compute_order_params method removed to eliminate duplicate logic
+    # All order parameter computation is now handled by SpreadCapture.compute_order_params
 
     def _submit_orders(self, params_list: List[Dict]) -> None:
         """
@@ -732,13 +772,100 @@ class MarketMaker(Strategy):
             if params is None:
                 continue
 
-            # Place orders
-            self._place_limit_order(OrderSide.BUY, params["bid_price"], params["buy_size"])
-            self._place_limit_order(OrderSide.SELL, params["ask_price"], params["sell_size"])
+            # Check if the parameters were adjusted for fees
+            fee_adjusted = params.get("fee_adjusted", False)
+            if fee_adjusted:
+                self._log.debug(f"Using fee-adjusted prices: bid={params['bid_price']}, ask={params['ask_price']}")
+
+            # Place orders if sizes are greater than zero
+            if params["buy_size"] > 0:
+                self._place_limit_order(OrderSide.BUY, params["bid_price"], params["buy_size"])
+
+            if params["sell_size"] > 0:
+                self._place_limit_order(OrderSide.SELL, params["ask_price"], params["sell_size"])
+
+    def _should_replace_order(self, existing_order, new_price, new_size, price_threshold_pct=0.001):
+        """
+        Determine if an existing order should be replaced based on price and size differences.
+
+        Parameters
+        ----------
+        existing_order : LimitOrder
+            The existing order
+        new_price : Decimal
+            The new desired price
+        new_size : Decimal
+            The new desired size
+        price_threshold_pct : float
+            The threshold percentage difference in price to trigger replacement
+
+        Returns
+        -------
+        bool
+            True if the order should be replaced, False otherwise
+        """
+        if existing_order is None:
+            return True
+
+        # Calculate price difference as percentage
+        price_diff_pct = abs(existing_order.price.as_decimal() - new_price) / existing_order.price.as_decimal()
+
+        # Check if size has changed significantly
+        size_changed = abs(existing_order.quantity.as_decimal() - new_size) / existing_order.quantity.as_decimal() > 0.05
+
+        # Replace if price difference exceeds threshold or size has changed significantly
+        return price_diff_pct > Decimal(str(price_threshold_pct)) or size_changed
+
+    def _find_closest_order(self, target_price, orders_dict):
+        """
+        Find the closest existing order to the target price.
+
+        Parameters
+        ----------
+        target_price : Decimal
+            The target price to compare against
+        orders_dict : Dict[ClientOrderId, LimitOrder]
+            Dictionary of active orders
+
+        Returns
+        -------
+        LimitOrder or None
+            The closest order if found, None otherwise
+        """
+        closest_order = None
+        min_price_diff = Decimal('inf')
+
+        for _, order in orders_dict.items():
+            if order.is_closed:
+                continue
+
+            price_diff = abs(order.price.as_decimal() - target_price)
+            if price_diff < min_price_diff:
+                min_price_diff = price_diff
+                closest_order = order
+
+        return closest_order
+
+    def _clean_order_dictionaries(self):
+        """
+        Clean up the order dictionaries by removing closed orders.
+        """
+        # Remove closed buy orders
+        for order_id in list(self.active_buy_orders.keys()):
+            order = self.active_buy_orders[order_id]
+            if order.is_closed:
+                del self.active_buy_orders[order_id]
+
+        # Remove closed sell orders
+        for order_id in list(self.active_sell_orders.keys()):
+            order = self.active_sell_orders[order_id]
+            if order.is_closed:
+                del self.active_sell_orders[order_id]
 
     def refresh_orders(self) -> None:
         """
-        Refresh all orders based on current market conditions and market regime.
+        Refresh orders intelligently based on current market conditions and market regime.
+        Only cancels and replaces orders when necessary.
         """
         if self.mid_price is None or self.instrument is None or self.spread is None:
             self._log.warning("Cannot refresh orders: missing market data")
@@ -756,8 +883,8 @@ class MarketMaker(Strategy):
         if self.current_trend is not None:
             self._log.debug(f"Current trend: {self.current_trend}, Skip buy: {self.skip_buy_side}, Skip sell: {self.skip_sell_side}")
 
-        # Cancel existing orders
-        self.cancel_all_orders()
+        # Clean up closed orders from our tracking dictionaries
+        self._clean_order_dictionaries()
 
         # Check for momentum overlay signals
         if self.enable_momentum_overlay and not self.momentum_overlay.active_momentum_trade:
@@ -769,13 +896,38 @@ class MarketMaker(Strategy):
 
             # Try to get Bollinger Bands values
             try:
-                if self.bbands.initialized and hasattr(self.bbands, 'outputs'):
+                if self.bbands.initialized:
+                    # Get the outputs dictionary
                     bbands_outputs = self.bbands.outputs
-                    if isinstance(bbands_outputs, dict):
-                        if 'upper' in bbands_outputs and 'lower' in bbands_outputs and 'middle' in bbands_outputs:
-                            bbands_upper = Decimal(str(bbands_outputs['upper']))
-                            bbands_lower = Decimal(str(bbands_outputs['lower']))
-                            bbands_middle = Decimal(str(bbands_outputs['middle']))
+
+                    # Log the available keys for debugging
+                    self._log.debug(f"Bollinger Bands outputs keys: {list(bbands_outputs.keys())}")
+
+                    # Check for standard pandas-ta bbands column names
+                    if 'BBU' in bbands_outputs and 'BBL' in bbands_outputs and 'BBM' in bbands_outputs:
+                        bbands_upper = Decimal(str(bbands_outputs['BBU']))
+                        bbands_lower = Decimal(str(bbands_outputs['BBL']))
+                        bbands_middle = Decimal(str(bbands_outputs['BBM']))
+                        self._log.debug(f"Using BBU/BBL/BBM format: U={bbands_upper}, M={bbands_middle}, L={bbands_lower}")
+                    # Check for alternative column names
+                    elif 'upper' in bbands_outputs and 'lower' in bbands_outputs and 'middle' in bbands_outputs:
+                        bbands_upper = Decimal(str(bbands_outputs['upper']))
+                        bbands_lower = Decimal(str(bbands_outputs['lower']))
+                        bbands_middle = Decimal(str(bbands_outputs['middle']))
+                        self._log.debug(f"Using upper/lower/middle format: U={bbands_upper}, M={bbands_middle}, L={bbands_lower}")
+                    # If we can't find the expected keys, try to infer from available keys
+                    elif len(bbands_outputs) >= 3:
+                        # Get all keys and sort them - typically the upper band has the highest value
+                        keys = list(bbands_outputs.keys())
+                        values = [bbands_outputs[k] for k in keys]
+
+                        # Sort keys by their values (assuming upper > middle > lower)
+                        sorted_keys = [k for _, k in sorted(zip(values, keys), reverse=True)]
+
+                        bbands_upper = Decimal(str(bbands_outputs[sorted_keys[0]]))
+                        bbands_middle = Decimal(str(bbands_outputs[sorted_keys[1]]))
+                        bbands_lower = Decimal(str(bbands_outputs[sorted_keys[2]]))
+                        self._log.debug(f"Inferred bands from keys {sorted_keys}: U={bbands_upper}, M={bbands_middle}, L={bbands_lower}")
             except Exception as e:
                 self._log.warning(f"Error getting Bollinger Bands values: {e}")
 
@@ -792,8 +944,39 @@ class MarketMaker(Strategy):
                 # Execute momentum trade
                 self._log.info(f"Momentum signal detected: {direction}")
 
-                # Calculate momentum trade size
+                # Calculate momentum trade size - use current trade_size which is dynamically adjusted
                 momentum_size = self.momentum_overlay.calculate_momentum_trade_size(self.trade_size)
+
+                # Adjust momentum size based on available capital if possible
+                try:
+                    # Use available_capital if we have it from previous calculations
+                    if self.available_capital is not None and self.available_capital > Decimal("0"):
+                        # For momentum trades, use up to 50% of available capital
+                        max_momentum_capital = self.available_capital * Decimal("0.5")
+
+                        # Calculate maximum size based on price
+                        if self.mid_price is not None and self.mid_price > Decimal("0"):
+                            max_size = max_momentum_capital / self.mid_price
+
+                            # Apply constraints
+                            if max_size > self.max_inventory:
+                                max_size = self.max_inventory
+
+                            # Limit momentum size if needed
+                            if momentum_size > max_size:
+                                momentum_size = max_size
+
+                    # Ensure valid size
+                    if self.instrument is not None:
+                        # Round to instrument precision
+                        momentum_size = (momentum_size // self.instrument.size_increment) * self.instrument.size_increment
+
+                        # Ensure minimum size
+                        min_size = self.instrument.size_increment * Decimal("10.0")
+                        if momentum_size < min_size:
+                            momentum_size = min_size
+                except Exception as e:
+                    self._log.debug(f"Using default momentum size: {e}")
 
                 # Place market order for momentum trade
                 if direction == 'LONG':
@@ -806,8 +989,15 @@ class MarketMaker(Strategy):
                     )
                     self.submit_order(order)
 
-                    # Update momentum overlay state
-                    self.momentum_overlay.start_momentum_trade(direction, self.mid_price)
+                    # Track the market order in active_buy_orders
+                    self.active_buy_orders[order.client_order_id] = order
+
+                    # Update momentum overlay state with current time
+                    self.momentum_overlay.start_momentum_trade(
+                        direction=direction,
+                        entry_price=self.mid_price,
+                        entry_time=self.clock.utc_now()
+                    )
 
                 elif direction == 'SHORT':
                     self._log.info(f"Executing momentum SHORT trade with size {momentum_size}")
@@ -819,13 +1009,21 @@ class MarketMaker(Strategy):
                     )
                     self.submit_order(order)
 
-                    # Update momentum overlay state
-                    self.momentum_overlay.start_momentum_trade(direction, self.mid_price)
+                    # Track the market order in active_sell_orders
+                    self.active_sell_orders[order.client_order_id] = order
+
+                    # Update momentum overlay state with current time
+                    self.momentum_overlay.start_momentum_trade(
+                        direction=direction,
+                        entry_price=self.mid_price,
+                        entry_time=self.clock.utc_now()
+                    )
 
                 # Skip regular order placement when executing momentum trade
                 return
 
         # Check if we have an active momentum trade
+        momentum_trade_active = False
         if self.enable_momentum_overlay and self.momentum_overlay.active_momentum_trade:
             # Update momentum trade status
             rsi_value = self.rsi.value if self.rsi.initialized and self.rsi.value is not None else 50.0
@@ -846,8 +1044,22 @@ class MarketMaker(Strategy):
 
                 # End momentum trade
                 self.momentum_overlay.end_momentum_trade()
+            else:
+                # Momentum trade is still active
+                momentum_trade_active = True
 
-                # Skip regular order placement when exiting momentum trade
+                # Check if momentum trade has been active for too long
+                current_time = self.clock.utc_now()
+                momentum_duration = (current_time - self.momentum_overlay.momentum_entry_time).total_seconds() if self.momentum_overlay.momentum_entry_time else 0
+
+                # If momentum trade has been active for more than 5 minutes, allow regular orders alongside it
+                if momentum_duration > 300:  # 5 minutes in seconds
+                    self._log.info(f"Momentum trade active for {momentum_duration:.0f} seconds, allowing regular orders alongside")
+                    momentum_trade_active = False
+
+            # Only skip regular order placement if momentum trade is still active and not too old
+            if momentum_trade_active:
+                self._log.debug("Skipping regular order placement due to active momentum trade")
                 return
 
         # Use SpreadCapture module to compute order parameters
@@ -862,10 +1074,13 @@ class MarketMaker(Strategy):
                 instrument=self.instrument,
             )
 
+        # Calculate optimal order sizes based on current capital
+        self._calculate_optimal_order_sizes()
+
         # Compute parameters for each level
         params_list = []
         for level in range(self.order_levels):
-            # Use SpreadCapture module
+            # Use SpreadCapture module with dynamically adjusted trade size
             params = self.spread_capture.compute_order_params(
                 level=level,
                 mid_price=self.mid_price,
@@ -884,13 +1099,70 @@ class MarketMaker(Strategy):
                 atr_value=Decimal(str(self.atr.value)) if self.atr.initialized and self.atr.value is not None else None,
                 skip_buy_side=self.skip_buy_side,
                 skip_sell_side=self.skip_sell_side,
+                consider_fees=self.consider_fees,
+                min_profit_pct=self.min_profit_pct,
             )
 
             if params is not None:
                 params_list.append(params)
 
-        # Submit orders
-        self._submit_orders(params_list)
+        # Smart order management - track which orders to keep
+        orders_to_keep = set()
+
+        # Process each parameter set
+        for params in params_list:
+            # Process buy orders if size > 0
+            if params["buy_size"] > 0 and not self.skip_buy_side:
+                # Find closest existing buy order
+                closest_buy_order = self._find_closest_order(
+                    params["bid_price"],
+                    self.active_buy_orders
+                )
+
+                # Check if we should keep or replace the order
+                if closest_buy_order and not self._should_replace_order(
+                    closest_buy_order,
+                    params["bid_price"],
+                    params["buy_size"]
+                ):
+                    # Keep this order, it's close enough
+                    orders_to_keep.add(closest_buy_order.client_order_id)
+                    self._log.debug(f"Keeping BUY order {closest_buy_order.client_order_id} at {closest_buy_order.price}")
+                else:
+                    # Place new order
+                    self._place_limit_order(OrderSide.BUY, params["bid_price"], params["buy_size"])
+
+            # Process sell orders if size > 0
+            if params["sell_size"] > 0 and not self.skip_sell_side:
+                # Find closest existing sell order
+                closest_sell_order = self._find_closest_order(
+                    params["ask_price"],
+                    self.active_sell_orders
+                )
+
+                # Check if we should keep or replace the order
+                if closest_sell_order and not self._should_replace_order(
+                    closest_sell_order,
+                    params["ask_price"],
+                    params["sell_size"]
+                ):
+                    # Keep this order, it's close enough
+                    orders_to_keep.add(closest_sell_order.client_order_id)
+                    self._log.debug(f"Keeping SELL order {closest_sell_order.client_order_id} at {closest_sell_order.price}")
+                else:
+                    # Place new order
+                    self._place_limit_order(OrderSide.SELL, params["ask_price"], params["sell_size"])
+
+        # Cancel orders that weren't kept
+        for order_id, order in list(self.active_buy_orders.items()):
+            if order_id not in orders_to_keep and not order.is_closed:
+                self._log.debug(f"Canceling BUY order {order_id} at {order.price}")
+                self.cancel_order(order)
+
+        for order_id, order in list(self.active_sell_orders.items()):
+            if order_id not in orders_to_keep and not order.is_closed:
+                self._log.debug(f"Canceling SELL order {order_id} at {order.price}")
+                self.cancel_order(order)
 
     def _place_limit_order(self, side: OrderSide, price: Decimal, size: Decimal) -> Optional[LimitOrder]:
         """
@@ -926,31 +1198,63 @@ class MarketMaker(Strategy):
             self._log.warning(f"Invalid {side.name} size: {size}, skipping order placement")
             return None
 
+        # Check if size is too small for the instrument's precision
+        if self.instrument is not None:
+            min_allowed_size = self.instrument.size_increment * Decimal("10.0")
+            if size < min_allowed_size:
+                self._log.warning(f"Size {size} is too small for {self.instrument_id}, minimum is {min_allowed_size}")
+                return None
+
         # Adjust price to ensure it's not a taker order if post_only is True
         if self.post_only and self.last_quote is not None:
+            # Use instrument tick size for price adjustments if available
+            tick_size = self.instrument.price_increment if self.instrument is not None else Decimal("0.0001")
+
+            # Calculate price adjustment factor based on tick size
+            # Default to 1 tick away from the current price
+            price_adjustment_factor = tick_size
+
             if side == OrderSide.BUY:
                 # If the buy price is higher than or equal to the ask price, it would be a taker order
                 if price >= self.last_quote.ask_price:
-                    # Adjust price to be slightly below the ask price
-                    price = self.last_quote.ask_price * Decimal("0.9995")
+                    # Adjust price to be below the ask price by at least one tick
+                    price = self.last_quote.ask_price - price_adjustment_factor
                     self._log.debug(f"Adjusted BUY price to {price} to avoid taker order")
             else:  # SELL
                 # If the sell price is lower than or equal to the bid price, it would be a taker order
                 if price <= self.last_quote.bid_price:
-                    # Adjust price to be slightly above the bid price
-                    price = self.last_quote.bid_price * Decimal("1.0005")
+                    # Adjust price to be above the bid price by at least one tick
+                    price = self.last_quote.bid_price + price_adjustment_factor
                     self._log.debug(f"Adjusted SELL price to {price} to avoid taker order")
 
-        # Create the order
-        order = self.order_factory.limit(
-            instrument_id=self.instrument_id,
-            order_side=side,
-            quantity=self.instrument.make_qty(size),
-            price=self.instrument.make_price(price),
-            time_in_force=self.time_in_force,
-            expire_time=self.clock.utc_now() + pd.Timedelta(minutes=self.order_expire_minutes) if self.time_in_force == TimeInForce.GTD else None,
-            post_only=self.post_only,
-        )
+        # Create order using SpreadCapture
+        # Note: Fee consideration is now handled in compute_order_params, not here
+        if self.spread_capture is not None:
+            order = self.spread_capture.create_limit_order(
+                order_factory=self.order_factory,
+                side=side,
+                price=price,
+                size=size,
+                time_in_force=self.time_in_force,
+                expire_time=self.clock.utc_now() + pd.Timedelta(minutes=self.order_expire_minutes) if self.time_in_force == TimeInForce.GTD else None,
+                post_only=self.post_only,
+            )
+
+            # If order creation failed, log and return
+            if order is None:
+                self._log.info(f"Failed to create {side.name} order at {price} for {size}")
+                return None
+        else:
+            # Create the order without fee consideration
+            order = self.order_factory.limit(
+                instrument_id=self.instrument_id,
+                order_side=side,
+                quantity=self.instrument.make_qty(size),
+                price=self.instrument.make_price(price),
+                time_in_force=self.time_in_force,
+                expire_time=self.clock.utc_now() + pd.Timedelta(minutes=self.order_expire_minutes) if self.time_in_force == TimeInForce.GTD else None,
+                post_only=self.post_only,
+            )
 
         # Submit the order
         self.submit_order(order)
@@ -1013,8 +1317,9 @@ class MarketMaker(Strategy):
             self._log.info(f"SELL order filled: {order_id} at {fill_price} for {fill_qty}. New inventory: {self.current_inventory}")
             del self.active_sell_orders[order_id]
 
-        # Refresh orders after a fill
-        self.refresh_orders()
+        # Don't refresh orders immediately after every fill
+        # This avoids excessive order churn
+        # Orders will be refreshed on the next timer event or market update
 
     def handle_order_canceled(self, event: OrderCanceled) -> None:
         """

@@ -16,7 +16,7 @@
 
 import numpy as np
 import pandas as pd
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from nautilus_trader.indicators.base.indicator import Indicator
 from nautilus_trader.model.data import Bar
@@ -56,7 +56,7 @@ class PandasTaIndicator(Indicator):
         self,
         bar_type: BarType,
         indicator_name: str,
-        params: Dict[str, Any] = None,
+        params: Optional[Dict[str, Any]] = None,
         price_type: PriceType = PriceType.LAST,
         output_index: int = 0,
     ):
@@ -301,6 +301,21 @@ class PandasTaIndicator(Indicator):
             True if the indicator has values, else False.
         """
         return len(self.indicator_values) > 0
+
+    @property
+    def outputs(self) -> Dict[str, Any]:
+        """
+        Return the additional output values from the indicator.
+
+        This is particularly useful for multi-output indicators like Bollinger Bands
+        that return multiple values (upper, middle, lower bands).
+
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary of additional output values.
+        """
+        return self.additional_values
 
     def reset(self) -> None:
         """
