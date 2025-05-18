@@ -10,28 +10,61 @@ parameters:
   instrument_id: BTCUSDT.BINANCE
   bar_type: BTCUSDT.BINANCE-1-HOUR-LAST-EXTERNAL
 
-  # Trading parameters
+  # Core trading parameters
   trade_size: 0.01
   max_inventory: 0.05
 
-  # Market making parameters
+  # Spread capture parameters
   spread_multiplier: 0.8  # Multiplier for the spread (0.8 = 80% of market spread)
   min_spread_pct: 0.0005  # Minimum spread as percentage of price (0.05%)
   max_spread_pct: 0.005   # Maximum spread as percentage of price (0.5%)
-
-  # Order parameters
   order_refresh_seconds: 300  # How often to refresh orders (5 minutes)
   order_levels: 2             # Number of order levels on each side
   level_spacing_pct: 0.001    # Spacing between levels as percentage of price (0.1%)
 
-  # Risk management
+  # Inventory management
   inventory_skew_enabled: true  # Enable inventory skew
   target_inventory_pct: 0.0     # Target inventory as percentage of max_inventory (0 = neutral)
 
-  # Order execution
-  time_in_force: "GTD"          # GTC, GTD, IOC, FOK
+  # Order execution parameters
+  time_in_force: 1              # TimeInForce enum: 0=GTC, 1=GTD, 2=IOC, 3=FOK, 4=DAY
   order_expire_minutes: 15      # For GTD orders, how many minutes until expiry
   post_only: false              # Whether to use post-only orders (set to false to increase fill rate)
+
+  # Market regime detection
+  enable_mean_reversion: true   # Enable mean reversion detection and trading
+  market_regime_check_interval: 3600  # How often to check market regime in seconds
+  autocorr_threshold: -0.2      # Autocorrelation threshold for mean reversion detection
+
+  # Technical indicators
+  atr_period: 14                # Period for ATR calculation
+  adx_period: 14                # Period for ADX calculation
+  adx_threshold: 25.0           # Threshold for ADX to determine trending vs range-bound market
+  rsi_length: 14                # Period for RSI calculation
+  bbands_length: 20             # Period for Bollinger Bands calculation
+  bbands_std: 2.0               # Standard deviation multiplier for Bollinger Bands
+
+  # Trend skew parameters
+  enable_trend_skew: true       # Enable trend skew functionality
+  trend_strength_threshold: 30.0  # ADX threshold for strong trend detection
+
+  # Momentum overlay parameters
+  enable_momentum_overlay: true  # Enable momentum overlay functionality
+  rsi_threshold_high: 70.0       # RSI threshold for detecting strong upward momentum
+  rsi_threshold_low: 30.0        # RSI threshold for detecting strong downward momentum
+  bbands_entry_threshold: 2.0    # Bollinger Bands threshold for momentum entry (in standard deviations)
+  momentum_trade_size_multiplier: 2.0  # Multiplier for trade size when taking momentum trades
+
+  # Risk management parameters
+  enable_risk_manager: true      # Enable risk management functionality
+  profit_take_pct: 0.005         # Profit taking percentage for accumulated inventory
+  stop_loss_pct: 0.01            # Stop loss percentage for accumulated inventory
+  max_drawdown_pct: 5.0          # Maximum allowed drawdown as a percentage before shutdown
+  cooldown_minutes: 60           # Cooldown period in minutes after a shutdown before resuming
+
+  # Dynamic sizing
+  dynamic_sizing: false          # Whether to enable dynamic position sizing based on volatility
+  volatility_factor: 1.0         # Factor to adjust order size based on volatility
 
 data:
   # Data requirements
