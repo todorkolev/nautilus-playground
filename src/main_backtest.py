@@ -34,6 +34,17 @@ Or run multiple strategies at once:
 
     python src/main_backtest.py --strategy src/strategies/moving_average_crossover/config.yaml src/strategies/moving_average_crossover/config.yaml
 
+Additional options:
+    --benchmark SYMBOL    Compare strategy performance against a benchmark (e.g., 'SPY', 'BTC-USD')
+    --output-dir DIR      Directory to save the QuantStats report (default: 'backtest_reports')
+    --open-browser        Open the generated report in a browser automatically
+    --start-date DATE     Start date for backtest (format: YYYY-MM-DD)
+    --end-date DATE       End date for backtest (format: YYYY-MM-DD)
+    --log-level LEVEL     Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+
+Example with visualization:
+    python src/main_backtest.py --strategy src/strategies/moving_average_crossover/config.yaml --benchmark BTC-USD --open-browser
+
 """
 
 import argparse
@@ -41,6 +52,10 @@ import logging
 import os
 import sys
 import yaml
+import numpy as np
+import pandas as pd
+import quantstats as qs
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -49,6 +64,7 @@ from typing import Dict, List, Optional, Any
 sys.path.insert(0, os.getcwd())
 
 from nautilus_trader.backtest.node import BacktestNode
+from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.backtest.config import BacktestDataConfig, BacktestVenueConfig
 from nautilus_trader.backtest.models import FillModel
 from nautilus_trader.config import BacktestRunConfig, BacktestEngineConfig, ImportableStrategyConfig
@@ -89,6 +105,23 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="End date for backtest (format: YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--benchmark",
+        type=str,
+        default=None,
+        help="Benchmark ticker symbol for comparison (e.g., 'SPY', 'BTC-USD')",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="backtest_reports",
+        help="Directory to save the QuantStats report (default: 'backtest_reports')",
+    )
+    parser.add_argument(
+        "--open-browser",
+        action="store_true",
+        help="Open the generated report in a browser automatically",
     )
     parser.add_argument(
         "--log-level",
@@ -303,29 +336,109 @@ def main() -> None:
         venues=venue_configs,
     )
 
-    # After creating the node, we'll add the fill model to the venue
-
     try:
         # Initialize and run the backtest node
         node = BacktestNode(configs=[config])
 
         # Get the engine from the node
-        engine = node.get_engine(config.id)
+        engine: BacktestEngine = node.get_engine(config.id)
 
-        # Set the fill model for the BINANCE venue
-        if engine is not None:
-            engine.change_fill_model(venue=Venue("BINANCE"), model=fill_model)
-        else:
-            logger.error("Could not get engine from node, fill model not applied")
-            # raise Exception("Could not get engine from node, fill model not applied")
+        # # Set the fill model for the BINANCE venue
+        # if engine is not None:
+        #     engine.change_fill_model(venue=Venue("BINANCE"), model=fill_model)
+        # else:
+        #     logger.error("Could not get engine from node, fill model not applied")
+        #     # raise Exception("Could not get engine from node, fill model not applied")
 
         # Run the backtest
-        node.run()
+        results = node.run()
+        print("Backtest completed successfully")
 
-        # Print summary results
-        logger.info("Backtest completed successfully")
+        # Get the engine from the node
+        engine: BacktestEngine = node.get_engine(config.id)
+
+        # Get daily returns
+        # Access the portfolio directly from the engine instead of through trader
+        returns = engine.portfolio.analyzer.returns()
+        print("Daily Returns:")
+        print(returns)
+
+        # Get returns statistics
+        returns_stats = engine.portfolio.analyzer.get_performance_stats_returns()
+        print("\nReturns Statistics:")
+        for stat_name, stat_value in returns_stats.items():
+            print(f"{stat_name}: {stat_value}")
+
+        # Get filled orders
+        order_fills_df = engine.trader.generate_order_fills_report()
+        print("\nOrder Fills:")
+        print(order_fills_df)
+
+        # Get positions
+        positions_df = engine.trader.generate_positions_report()
+        print("\nPositions:")
+        print(positions_df)
+
+        # Get account information (replace "VENUE_NAME" with your venue)
+        venue_name = "BINANCE"  # or whatever venue you're using
+        account_df = engine.trader.generate_account_report(Venue(venue_name))
+        print(f"\nAccount Report for {venue_name}:")
+        print(account_df)
+
+        # Get the backtest result
+        if results and len(results) > 0:
+            backtest_result = results[0]
+            print(f"Backtest results retrieved successfully: {backtest_result}")
+
+            # Get the backtest start and end dates
+            if backtest_result.backtest_start:
+                start_date = pd.Timestamp(backtest_result.backtest_start / 1_000_000_000, unit='s')
+            else:
+                start_date = pd.Timestamp('2020-01-01')
+
+            if backtest_result.backtest_end:
+                end_date = pd.Timestamp(backtest_result.backtest_end / 1_000_000_000, unit='s')
+            else:
+                end_date = pd.Timestamp.now()
+
+            print(f"Backtest period: {start_date} to {end_date}")
+
+            # Generate output directory if it doesn't exist
+            output_dir = Path(args.output_dir)
+            output_dir.mkdir(exist_ok=True, parents=True)
+
+            # Generate a filename based on strategy and timestamp
+            strategy_name = Path(strategy_paths[0]).stem if strategy_paths else "unknown_strategy"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = output_dir / f"{strategy_name}_{timestamp}_report.html"
+
+            print(f"Generating QuantStats report to {output_file}")
+
+            # Generate a full QuantStats report
+            try:
+                # Generate the report with error handling
+                try:
+                    trimed_returns = returns[1:]
+                    returns_series = trimed_returns.tz_localize(None).resample('D').sum().fillna(0)
+                    print(f"Returns series: {returns_series}")
+        
+                    qs.reports.full(returns_series, benchmark=args.benchmark, output=str(output_file), title=f"Backtest Results for {strategy_name}")
+                    print(f"QuantStats report generated successfully at {output_file}")
+
+                    # Open the report in a browser if requested
+                    if args.open_browser:
+                        print(f"Opening report in browser")
+                        webbrowser.open(f"file://{output_file.absolute()}")
+
+                except Exception as e:
+                    print(f"Error generating full report: {e}")
+            except Exception as e:
+                print(f"Failed to generate any report: {e}")
+        else:
+            print("No backtest results returned")
+
     except Exception as e:
-        logger.exception(f"Error running backtest: {e}")
+        print(f"Error running backtest: {e}")
         sys.exit(1)
 
 
