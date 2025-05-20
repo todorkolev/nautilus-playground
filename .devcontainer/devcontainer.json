@@ -25,10 +25,13 @@
                 // Other languages
                 "ms-vscode.vscode-typescript-next", // TypeScript
                 "mechatroner.rainbow-csv", // CSV
+                // DevOps
+                "github.vscode-github-actions",
+                "sanjulaganepola.github-local-actions",
                 // AI
                 "augment.vscode-augment",
                 "rooveterinaryinc.roo-cline",
-                "github.copilot"
+                "github.copilot",
             ]
         }
     },
@@ -36,6 +39,10 @@
     "features": {
         "ghcr.io/devcontainers/features/git:1": {
             "version": "latest"
+        },
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {
+            "version": "latest",
+            "moby": true
         }
     },
     "forwardPorts": [

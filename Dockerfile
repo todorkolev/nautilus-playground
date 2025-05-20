@@ -1,6 +1,11 @@
 # FROM python:3.12-slim
 FROM quantconnect/lean:foundation
 
+# Add GitHub Container Registry labels
+LABEL org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}
+LABEL org.opencontainers.image.description="Nautilus Playground Docker Image"
+LABEL org.opencontainers.image.licenses=MIT
+
 # Copy data catalog from the Nautilus image
 COPY --from=ghcr.io/nautechsystems/jupyterlab:latest@sha256:344f2324a477d331966a15fbe8b13c6ff5be085d62127ad2fc30516582140ee0 \
     /catalog /catalog/
@@ -63,7 +68,7 @@ RUN uv pip install --system jupyterlab
 COPY requirements.txt .
 RUN uv pip install --system -r requirements.txt
 
-# Various packages install a `tests` directory which causes pytest to use it instead of our local one. 
+# Various packages install a `tests` directory which causes pytest to use it instead of our local one.
 # This is not what we want, so we are removing it.
 RUN python -c "import site; import os; [os.system(f'rm -rf {path}/tests') for path in site.getsitepackages()]"
 
@@ -73,6 +78,12 @@ RUN python -c "import site; import os; [os.system(f'rm -rf {path}/tests') for pa
 
 # Install oh-my-zsh
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+# Set oh-my-zsh theme to agnoster
+# RUN sed -i 's/ZSH_THEME="robbyrussell"/ZSH_THEME="agnoster"/g' /root/.zshrc
+RUN wget https://raw.githubusercontent.com/moarram/headline/main/headline.zsh-theme && \
+    sed -i "s/'echo \$USER'/'whoami'/g" headline.zsh-theme && \
+    mv headline.zsh-theme /root/.oh-my-zsh/themes/headline.zsh-theme && \
+    echo 'source /root/.oh-my-zsh/themes/headline.zsh-theme' >> /root/.zshrc
 
 # Install Node.js using NodeSource
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
@@ -97,6 +108,39 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 # # Install aider-chat
 # RUN uv tool install --force --python python3.12 aider-chat@latest
 
+# Install GitHub CLI
+RUN (type -p wget >/dev/null || (sudo apt update && sudo apt-get install wget -y)) \
+    && sudo mkdir -p -m 755 /etc/apt/keyrings \
+    && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+    && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && sudo apt update \
+    && sudo apt install gh -y
+
+# # Setup GitHub CLI to auth with SSH
+# RUN mkdir -p ~/.ssh && \
+#     ssh-keyscan github.com >> ~/.ssh/known_hosts && \
+#     echo "Host github.com\n  PreferredAuthentications publickey\n  IdentityFile ~/.ssh/id_rsa" > ~/.ssh/config && \
+#     gh auth setup-ssh
+# # Install Act for local GitHub Actions testing
+# RUN gh extension install https://github.com/nektos/gh-act
+
+# Install Act for local GitHub Actions testing
+RUN curl -s https://raw.githubusercontent.com/nektos/act/master/install.sh | bash && \
+    # Move act binary to /usr/local/bin to make it available in PATH
+    mv ./bin/act /usr/local/bin/ && \
+    rm -rf bin && \
+    # Create a basic configuration file
+    echo "--container-architecture linux/arm64" > /root/.actrc && \
+    echo "-P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-latest" >> /root/.actrc
+# # Create a sample event file for testing
+# mkdir -p /workspaces/nautilus-playground/.github/act && \
+# echo '{"release":{"tag_name":"v1.0.0-test","name":"Test Release v1.0.0"}}' > /workspaces/nautilus-playground/.github/act/release.json && \
+# # Add Act aliases to .zshrc for convenience
+# echo 'alias act-release="act release -e .github/act/release.json -j build-and-push"' >> /root/.zshrc && \
+# echo 'alias act-dryrun="act release -e .github/act/release.json -j build-and-push --dryrun"' >> /root/.zshrc
+
 # END OF CUSTOM EXTENSIONS SECTION
 # =========================================================================
 
@@ -107,14 +151,14 @@ RUN chmod +x /workspaces/nautilus-playground/scripts/start_jupyter.sh
 # Update Nautilus Trader docs and examples
 RUN cd /workspaces/nautilus-playground && \
     python scripts/update_nautilus.py
-    
+
 # Install Tini
 RUN if [ "$(uname -m)" = "aarch64" ]; then \
-        tini_binary="tini-arm64"; \
-        tini_sha256="07952557df20bfd2a95f9bef198b445e006171969499a1d361bd9e6f8e5e0e81"; \
+    tini_binary="tini-arm64"; \
+    tini_sha256="07952557df20bfd2a95f9bef198b445e006171969499a1d361bd9e6f8e5e0e81"; \
     else \
-        tini_binary="tini-amd64"; \
-        tini_sha256="93dcc18adc78c65a028a84799ecf8ad40c936fdfc5f2a57b1acda5a8117fa82c"; \
+    tini_binary="tini-amd64"; \
+    tini_sha256="93dcc18adc78c65a028a84799ecf8ad40c936fdfc5f2a57b1acda5a8117fa82c"; \
     fi && \
     wget --quiet -O tini "https://github.com/krallin/tini/releases/download/v0.19.0/${tini_binary}" && \
     echo "${tini_sha256} *tini" | sha256sum -c - && \
