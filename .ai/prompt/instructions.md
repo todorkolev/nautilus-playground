@@ -51,6 +51,7 @@ Also:
 - Follow the Boy Scout Rule: Leave the code better than you found it
 
 General rules:
+- Use standard documented approaches rather than custom solutions.
 - Don't go for shortcuts and simple solutions - complete the task that the user requested.
 - Don't apply patches - fix the underlying issues and root causes.
 - Never read or write in .env files. They should be accessed strictly by the user.

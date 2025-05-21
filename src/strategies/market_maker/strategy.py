@@ -18,7 +18,7 @@ from nautilus_trader.core.message import Event
 from nautilus_trader.model.data import Bar, QuoteTick
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import OrderSide, TimeInForce, PositionSide
-from nautilus_trader.model.events import OrderFilled, OrderCanceled, PositionChanged, PositionOpened, PositionClosed
+from nautilus_trader.model.events import OrderFilled, OrderCanceled, OrderCancelRejected, PositionChanged, PositionOpened, PositionClosed
 from nautilus_trader.model.identifiers import InstrumentId, ClientOrderId, PositionId
 from nautilus_trader.model.objects import Price, Quantity
 from nautilus_trader.model.orders import LimitOrder, MarketOrder
@@ -193,6 +193,9 @@ class MarketMaker(Strategy):
         self._stop_loss_pct = Decimal(str(config.stop_loss_pct))
         self._volatility_factor = Decimal(str(config.volatility_factor))
 
+        # Dictionary to store initial account balances for PnL calculation
+        self.initial_account_balances = {}
+
         # Keep original values for non-calculation fields
         self.order_refresh_seconds = config.order_refresh_seconds
         self.order_levels = config.order_levels
@@ -352,6 +355,16 @@ class MarketMaker(Strategy):
                 name="RiskCheck",
                 interval=pd.Timedelta(minutes=1),  # Check risk metrics every minute
             )
+
+        # Set timer for regular PnL updates
+        self.clock.set_timer(
+            name="PnLUpdate",
+            interval=pd.Timedelta(minutes=5),  # Log PnL every 5 minutes
+        )
+
+        # Log initial PnL (will likely be zero at start)
+        self._log.info("Establishing baseline PnL...")
+        self.log_total_pnl()
 
     def on_stop(self) -> None:
         """
@@ -600,6 +613,8 @@ class MarketMaker(Strategy):
             self.handle_order_filled(event)
         elif isinstance(event, OrderCanceled):
             self.handle_order_canceled(event)
+        elif isinstance(event, OrderCancelRejected):
+            self.handle_order_cancel_rejected(event)
 
     def on_timer_event(self, event: TimeEvent) -> None:
         """
@@ -614,6 +629,9 @@ class MarketMaker(Strategy):
             self.refresh_orders()
         elif event.name == "RiskCheck" and self.enable_risk_manager:
             self.check_risk_metrics()
+        elif event.name == "PnLUpdate":
+            # Regularly log the current PnL
+            self.log_total_pnl()
 
     def update_market_metrics(self) -> None:
         """
@@ -849,17 +867,30 @@ class MarketMaker(Strategy):
     def _clean_order_dictionaries(self):
         """
         Clean up the order dictionaries by removing closed orders.
+        Also checks for orders that might be missing from the exchange but still in our tracking.
         """
+        # Get all open orders from the cache for this instrument
+        open_orders_ids = set()
+        try:
+            open_orders = self.cache.orders_open(self.instrument_id)
+            open_orders_ids = {order.client_order_id for order in open_orders}
+        except Exception as e:
+            self._log.warning(f"Error getting open orders from cache: {e}")
+
         # Remove closed buy orders
         for order_id in list(self.active_buy_orders.keys()):
             order = self.active_buy_orders[order_id]
-            if order.is_closed:
+            # Remove if order is closed or not in the open orders cache
+            if order.is_closed or (order_id not in open_orders_ids and len(open_orders_ids) > 0):
+                self._log.debug(f"Removing BUY order {order_id} from tracking (closed={order.is_closed}, not_in_cache={order_id not in open_orders_ids})")
                 del self.active_buy_orders[order_id]
 
         # Remove closed sell orders
         for order_id in list(self.active_sell_orders.keys()):
             order = self.active_sell_orders[order_id]
-            if order.is_closed:
+            # Remove if order is closed or not in the open orders cache
+            if order.is_closed or (order_id not in open_orders_ids and len(open_orders_ids) > 0):
+                self._log.debug(f"Removing SELL order {order_id} from tracking (closed={order.is_closed}, not_in_cache={order_id not in open_orders_ids})")
                 del self.active_sell_orders[order_id]
 
     def refresh_orders(self) -> None:
@@ -1153,6 +1184,9 @@ class MarketMaker(Strategy):
                     # Place new order
                     self._place_limit_order(OrderSide.SELL, params["ask_price"], params["sell_size"])
 
+        # Clean up order dictionaries before canceling to avoid "Unknown order" errors
+        self._clean_order_dictionaries()
+
         # Cancel orders that weren't kept
         for order_id, order in list(self.active_buy_orders.items()):
             if order_id not in orders_to_keep and not order.is_closed:
@@ -1317,6 +1351,9 @@ class MarketMaker(Strategy):
             self._log.info(f"SELL order filled: {order_id} at {fill_price} for {fill_qty}. New inventory: {self.current_inventory}")
             del self.active_sell_orders[order_id]
 
+        # Calculate and log the total strategy PnL after this fill
+        self.log_total_pnl()
+
         # Don't refresh orders immediately after every fill
         # This avoids excessive order churn
         # Orders will be refreshed on the next timer event or market update
@@ -1340,10 +1377,39 @@ class MarketMaker(Strategy):
             del self.active_sell_orders[order_id]
             self._log.debug(f"SELL order canceled: {order_id}")
 
+    def handle_order_cancel_rejected(self, event: OrderCancelRejected) -> None:
+        """
+        Handle an order cancel rejected event.
+
+        This occurs when trying to cancel an order that no longer exists on the exchange,
+        typically because it was already filled or canceled.
+
+        Parameters
+        ----------
+        event : OrderCancelRejected
+            The order cancel rejected event.
+        """
+        order_id = event.client_order_id
+        reason = event.reason
+
+        self._log.warning(f"Order cancel rejected for {order_id}: {reason}")
+
+        # Remove from active orders since the order is no longer valid on the exchange
+        # This ensures our internal state stays in sync with the exchange
+        if order_id in self.active_buy_orders:
+            self._log.info(f"Removing BUY order {order_id} from tracking due to cancel rejection")
+            del self.active_buy_orders[order_id]
+        elif order_id in self.active_sell_orders:
+            self._log.info(f"Removing SELL order {order_id} from tracking due to cancel rejection")
+            del self.active_sell_orders[order_id]
+
     def cancel_all_orders(self) -> None:
         """
         Cancel all active orders.
         """
+        # First, clean up order dictionaries to avoid canceling orders that don't exist
+        self._clean_order_dictionaries()
+
         # Cancel buy orders
         for order_id in list(self.active_buy_orders.keys()):
             self.cancel_order(self.active_buy_orders[order_id])
@@ -1355,6 +1421,177 @@ class MarketMaker(Strategy):
         # Clear active orders
         self.active_buy_orders = {}
         self.active_sell_orders = {}
+
+    def log_total_pnl(self) -> None:
+        """
+        Calculate and log the total strategy PnL.
+
+        This method retrieves the current PnL from the portfolio and logs it.
+        It includes both realized and unrealized PnL.
+        """
+        if self.instrument_id is None or self.mid_price is None or self.instrument is None:
+            self._log.debug("Cannot calculate PnL: missing instrument_id, instrument, or mid_price")
+            return
+
+        try:
+            # Create a Price object from the current mid price
+            current_price = self.instrument.make_price(self.mid_price)
+
+            # Get realized PnL
+            realized_pnl = self.portfolio.realized_pnl(self.instrument_id)
+            realized_pnl_str = str(realized_pnl) if realized_pnl is not None else "N/A"
+
+            # Get unrealized PnL using current mid price
+            unrealized_pnl = self.portfolio.unrealized_pnl(self.instrument_id, current_price)
+            unrealized_pnl_str = str(unrealized_pnl) if unrealized_pnl is not None else "N/A"
+
+            # Get total PnL
+            total_pnl = self.portfolio.total_pnl(self.instrument_id, current_price)
+            total_pnl_str = str(total_pnl) if total_pnl is not None else "N/A"
+
+            # Log the PnL information
+            self._log.info(f"Strategy PnL - Total: {total_pnl_str} (Realized: {realized_pnl_str}, Unrealized: {unrealized_pnl_str})")
+
+            # Cross-check with account balances PnL
+            self.log_account_balances_pnl()
+
+            # # Get open positions for additional context
+            # positions = self.cache.positions_open(self.instrument_id)
+            # if positions:
+            #     for position in positions:
+            #         position_pnl = position.total_pnl(current_price)
+            #         self._log.info(f"Position {position.id}: Side={position.side.name}, Qty={position.quantity}, PnL={position_pnl}")
+        except Exception as e:
+            self._log.warning(f"Error calculating PnL: {e}")
+
+    def log_account_balances_pnl(self) -> None:
+        """
+        Calculate and log the total PnL by summing all account balances converted to USDT.
+
+        This method retrieves all account balances from the portfolio and calculates
+        the total PnL by comparing current balances with initial balances.
+        """
+        try:
+            # Get the venue for this instrument
+            venue = self.instrument_id.venue
+
+            # Get the account for this venue
+            account = self.portfolio.account(venue)
+            if account is None:
+                self._log.debug(f"Cannot calculate account balances PnL: no account found for venue {venue}")
+                return
+
+            # Get all balances for this account
+            balances = account.balances_total()
+            if not balances:
+                self._log.debug("Cannot calculate account balances PnL: no balances found")
+                return
+
+            # Target currency for conversion (USDT)
+            target_currency = USDT
+
+            # Store initial balances if not already stored
+            if not self.initial_account_balances:
+                self._log.info("Storing initial account balances as baseline for PnL calculation")
+                self.initial_account_balances = {currency: money.as_decimal() for currency, money in balances.items()}
+
+            # Calculate total value in USDT
+            total_value_usdt = Decimal("0")
+
+            # Log individual balances with conversion rates
+            self._log.info("Account balances:")
+
+            for currency, money in balances.items():
+                balance_amount = money.as_decimal()
+
+                # Skip zero balances
+                if balance_amount == Decimal("0"):
+                    continue
+
+                # Convert to USDT if not already USDT
+                if currency != target_currency:
+                    # Get exchange rate from cache
+                    xrate = self.cache.get_xrate(
+                        venue=venue,
+                        from_currency=currency,
+                        to_currency=target_currency,
+                    )
+
+                    # if xrate is None:
+                    #     # Try mark exchange rate if regular exchange rate is not available
+                    #     xrate = self.cache.get_mark_xrate(
+                    #         from_currency=currency,
+                    #         to_currency=target_currency,
+                    #     )
+
+                    if xrate is None:
+                        self._log.debug(f"Cannot convert {currency} to {target_currency}: no exchange rate available")
+                        continue
+
+                    # Convert balance to USDT
+                    balance_in_usdt = balance_amount * Decimal(str(xrate))
+                    self._log.info(f"  {currency}: {balance_amount} (= {balance_in_usdt:.8f} {target_currency}, rate: {xrate:.8f})")
+                else:
+                    # Already in USDT
+                    balance_in_usdt = balance_amount
+                    self._log.info(f"  {currency}: {balance_amount}")
+
+                # Add to total
+                total_value_usdt += balance_in_usdt
+
+            # Calculate PnL if we have initial balances
+            if self.initial_account_balances:
+                # Calculate initial total value in USDT
+                initial_total_value_usdt = Decimal("0")
+
+                for currency, amount in self.initial_account_balances.items():
+                    # Skip zero balances
+                    if amount == Decimal("0"):
+                        continue
+
+                    # Convert to USDT if not already USDT
+                    if currency != target_currency:
+                        # Get exchange rate from cache
+                        xrate = self.cache.get_xrate(
+                            venue=venue,
+                            from_currency=currency,
+                            to_currency=target_currency,
+                        )
+
+                        if xrate is None:
+                            # Try mark exchange rate if regular exchange rate is not available
+                            xrate = self.cache.get_mark_xrate(
+                                from_currency=currency,
+                                to_currency=target_currency,
+                            )
+
+                        if xrate is None:
+                            self._log.debug(f"Cannot convert initial {currency} to {target_currency}: no exchange rate available")
+                            continue
+
+                        # Convert balance to USDT
+                        balance_in_usdt = amount * Decimal(str(xrate))
+                    else:
+                        # Already in USDT
+                        balance_in_usdt = amount
+
+                    # Add to initial total
+                    initial_total_value_usdt += balance_in_usdt
+
+                # Calculate PnL
+                pnl_usdt = total_value_usdt - initial_total_value_usdt
+                pnl_percentage = (pnl_usdt / initial_total_value_usdt) * Decimal("100") if initial_total_value_usdt > Decimal("0") else Decimal("0")
+
+                # Log PnL information
+                self._log.info(f"Account Balances PnL - Total Value: {total_value_usdt:.8f} {target_currency}")
+                self._log.info(f"Account Balances PnL - Initial Value: {initial_total_value_usdt:.8f} {target_currency}")
+                self._log.info(f"Account Balances PnL - Profit/Loss: {pnl_usdt:.8f} {target_currency} ({pnl_percentage:.4f}%)")
+            else:
+                # Just log total value if no initial balances
+                self._log.info(f"Account Balances - Total Value: {total_value_usdt:.8f} {target_currency}")
+
+        except Exception as e:
+            self._log.warning(f"Error calculating account balances PnL: {e}")
 
     def check_risk_metrics(self) -> None:
         """
@@ -1378,6 +1615,9 @@ class MarketMaker(Strategy):
             equity = account.balance_total()
             if equity is not None:
                 self.risk_manager.update_equity(equity.as_decimal())
+
+                # Log current PnL when checking risk metrics
+                self.log_total_pnl()
 
                 # Check if we should shut down due to drawdown
                 current_time = self.clock.utc_now()
