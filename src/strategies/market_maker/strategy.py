@@ -325,10 +325,10 @@ class MarketMaker(Strategy):
         if self.instrument is None:
             self.instrument = self.cache.instrument(self.instrument_id)
             if self.instrument is None:
-                self._log.warning(f"Instrument {self.instrument_id} not found in cache")
-                from nautilus_trader.test_kit.providers import TestInstrumentProvider
-                self.instrument = TestInstrumentProvider.btcusdt_binance()
-                self._log.info(f"Created dummy instrument {self.instrument_id} for backtesting")
+                self._log.error(f"Instrument {self.instrument_id} not found in cache")
+                self._log.error("Cannot continue without a valid instrument. Stopping strategy.")
+                self.stop()
+                return
 
         # Initialize spread capture module
         self.spread_capture = SpreadCapture(

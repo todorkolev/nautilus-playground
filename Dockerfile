@@ -82,6 +82,7 @@ RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master
 # RUN sed -i 's/ZSH_THEME="robbyrussell"/ZSH_THEME="agnoster"/g' /root/.zshrc
 RUN wget https://raw.githubusercontent.com/moarram/headline/main/headline.zsh-theme && \
     sed -i "s/'echo \$USER'/'whoami'/g" headline.zsh-theme && \
+    sed -i "s/'basename \"\$VIRTUAL_ENV\"'/'basename \"\$CONDA_DEFAULT_ENV\"'/g" headline.zsh-theme && \
     mv headline.zsh-theme /root/.oh-my-zsh/themes/headline.zsh-theme && \
     echo 'source /root/.oh-my-zsh/themes/headline.zsh-theme' >> /root/.zshrc
 
